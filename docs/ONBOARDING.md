@@ -63,6 +63,40 @@
 - **レビュー/承認フロー:** コード変更は `git diff --check`、構文チェック、該当CLIの軽量実行を通してからcommitする。
 - **その他の運用ルール:** 生成物は原則 `tmp/` 以下に出す。大容量ファイルは `.gitignore` の方針に従い、symlinkやローカル配置をcommitしない。
 
+## 8. 公式デモデータで推論 → Rerun(.rrd)を回す手順
+
+公式デモGIF(`demo/*_rgb_gt_pred_2d.gif`, 各32フレーム/640×360)を入力に、D4RT 密推論 → RGB・推定深度・点群・カメラfrustum を含む `.rrd` を生成する一連手順。GPUが必要(CUDA実演算)。
+
+```bash
+# 0) 環境(可視化 + screenshot 用の依存)
+uv sync --extra vis --extra dev
+uv run playwright install chromium    # screenshot モードを使う場合のみ
+
+# 1) 公式GIF → dense scene npz(D4RT推論。クエリ点ベースなので密な正則格子で推論)
+B=checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG
+uv run python scripts/dump_dense_scene_for_rerun.py \
+  --config $B/model.yaml --ckpt-path $B/opend4rt.ckpt \
+  --video demo/softball_25_rgb_gt_pred_2d.gif \
+  --output tmp/official_dense_32.npz \
+  --num-frames 32 --grid-cols 256 --grid-rows 144 --query-chunk-size 512 --device cuda
+
+# 2) npz → .rrd(ヘッドレス。+ PNGスクショも撮るなら --mode screenshot)
+uv run --extra vis --extra dev python scripts/visualize_rerun.py \
+  --dense-scene tmp/official_dense_32.npz \
+  --mode screenshot --output tmp/official_scene_32.rrd --screenshot tmp/official_scene_32.png
+
+# 3) 閲覧(ローカルビューア / Webビューア)
+uv run rerun tmp/official_scene_32.rrd
+uv run rerun --serve-web tmp/official_scene_32.rrd   # 表示URLをブラウザで開く
+```
+
+- **表示パネル:** 3Dビュー(色付き点群 + カメラfrustumのワイヤフレーム)、`frame/image`(RGB)、`frame/depth`(推定深度)。
+- **カメラ:** D4RTは姿勢を直接出さない(`pred_camera_*=None`)ため、静的点の2D-3D対応からPnPで各フレーム姿勢を復元している。
+- **深度:** クエリ点zから格子解像(例 256×144)の低解像近似として生成。毎ピクセル深度ではない。
+- **規模/VRAM実測:** 32フレーム・36,864点・`--query-chunk-size 512` で **ピーク約6.0GB / 24GB**(約25%)。VRAMは制約にならず、上限はGIF長(32)とモデル入力解像(256×256)。VRAMを使い切るには `--query-chunk-size` を上げる(速度向上)。
+- **2000フレーム源(COLMAP元データ)で回す場合:** `--video` の代わりに `--image-dir recon/.../images --num-frames 24 --frame-stride 3`。D4RTは≤48フレームのクリップ単位なので2000全体の一括処理は不可、代表クリップを処理する。
+- 設計の詳細は `docs/visualization_pipeline.md`(特に §22.5)を参照。生成物は `tmp/` 配下(`.gitignore` 済み)。
+
 ---
 
 ### 付録: 参考情報
