@@ -33,6 +33,7 @@ test = [
 dev = [
     "ruff>=0.15.16",
     "ty>=0.0.48",
+    "radon>=6.0.1",
 ]
 
 [tool.uv.sources]
