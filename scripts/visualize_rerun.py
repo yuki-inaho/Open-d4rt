@@ -41,9 +41,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from vis.rerun_visualize import (  # noqa: E402
     save_demo_package_to_rrd,
+    save_dense_scene_to_rrd,
     save_static_tracks_to_rrd,
     save_trajectory_comparison_to_rrd,
     visualize_demo_package,
+    visualize_dense_scene,
     visualize_static_tracks,
     visualize_trajectory_comparison,
 )
@@ -59,6 +61,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--demo-package", type=Path, help="Demo package directory.")
     source.add_argument("--tracks-npz", type=Path, help="Static-tracks .npz dump.")
+    source.add_argument(
+        "--dense-scene", type=Path, help="Dense-scene .npz (RGB/depth/points/camera)."
+    )
     parser.add_argument(
         "--colmap-model", type=Path, help="COLMAP model dir (with --tracks-npz)."
     )
@@ -86,6 +91,13 @@ def _write_rrd(args: argparse.Namespace) -> Path:
         return save_demo_package_to_rrd(
             args.demo_package, args.output, max_points=args.max_points
         )
+    if args.dense_scene is not None:
+        return save_dense_scene_to_rrd(
+            args.dense_scene,
+            args.output,
+            max_points=args.max_points,
+            use_ransac=not args.no_ransac,
+        )
     if args.colmap_model is not None:
         return save_trajectory_comparison_to_rrd(
             args.tracks_npz,
@@ -101,6 +113,10 @@ def _write_rrd(args: argparse.Namespace) -> Path:
 def _spawn_viewer(args: argparse.Namespace) -> None:
     if args.demo_package is not None:
         visualize_demo_package(args.demo_package, max_points=args.max_points)
+    elif args.dense_scene is not None:
+        visualize_dense_scene(
+            args.dense_scene, max_points=args.max_points, use_ransac=not args.no_ransac
+        )
     elif args.colmap_model is not None:
         visualize_trajectory_comparison(
             args.tracks_npz, args.colmap_model, use_ransac=not args.no_ransac

@@ -184,6 +184,7 @@ flowchart LR
 | `demo_gradio.build_ui` | Webアプリ(ライブ) | demo package 閲覧 + 軌跡チェック UI(GLB/PnPを閲覧時生成) | `scripts/demo_gradio.py` | `scripts/demo_gradio.py:101` |
 | `bake_viewer_assets.bake_all` | スクリプト/ベイカー | 全成果物(GLB/軌跡report/plot/rrd)を事前生成 → `viewer_index.json` | `scripts/bake_viewer_assets.py` | `scripts/bake_viewer_assets.py:121`(`bake_demo_package:39`, `bake_trajectory:76`) |
 | `demo_gradio.build_prebaked_ui` | Webアプリ(静的) | ベイク済みファイルを**閲覧時ゼロ計算**で表示 | `scripts/demo_gradio.py` | `scripts/demo_gradio.py:190`(`load_baked_package:167`) |
+| `dump_dense_scene_for_rerun` + `rerun_visualize.save_dense_scene_to_rrd` | スクリプト + ライブラリ | 密格子で D4RT 推論 → RGB/推定深度/点群/カメラfrustum の `.rrd` | `scripts/dump_dense_scene_for_rerun.py`, `vis/rerun_visualize.py` | `scripts/dump_dense_scene_for_rerun.py:69`, `vis/rerun_visualize.py:513`(`_log_dense_scene:432`) |
 | `_export_demo_data`(依存元) | 上流ライブラリ | 点群/トラック/動的マスク/ref0_K 推論 | `vis/build_like_demo.py` | `vis/build_like_demo.py:1567` |
 
 ---
@@ -407,3 +408,24 @@ tmp/viewer_results/
 - `tests/test_bake_viewer_assets.py`(ベイカー単体: GLB/report/plot/rrd 生成・index 整合)
 - `tests/test_demo_gradio_app.py`(`build_prebaked_ui` 構築・`load_baked_*` のパス解決)
 - 実データで `tmp/viewer_results/` を生成し、`--prebaked` 起動 → HTTP 200・ブラウザ実描画(動画/poster/GLB/meta)を確認済み。
+
+### 22.5 Dense scene の `.rrd`(RGB + 推定深度 + 点群 + カメラfrustum）
+
+D4RT はクエリ点ベースで毎ピクセル深度を直接出さないため、**密な正則格子**で推論し、各フレームの z(PnPで復元したカメラ系)を低解像の推定深度画像にする。生成物は Rerun `.rrd`。
+
+```bash
+# 1) 密推論(元2000フレーム源からクリップを処理。D4RTは<=48フレームのクリップ単位)
+uv run python scripts/dump_dense_scene_for_rerun.py \
+  --config <model.yaml> --ckpt-path <ckpt> \
+  --image-dir recon/TVA_NYX650_2026_06_04_colmap/images \
+  --output tmp/tva_dense.npz --num-frames 24 --frame-stride 3 --grid-cols 96 --grid-rows 72
+
+# 2) .rrd 生成(+ ヘッドレス screenshot)
+uv run --extra vis --extra dev python scripts/visualize_rerun.py \
+  --dense-scene tmp/tva_dense.npz --mode screenshot \
+  --output tmp/tva_scene.rrd --screenshot tmp/tva_scene.png
+```
+
+- 表示パネル: 3Dビュー(色付き点群 + カメラ frustum のワイヤフレーム)、`frame/image`(RGB)、`frame/depth`(推定深度)。
+- カメラは D4RT が直接出さない(`pred_camera_*=None`)ため、静的点の 2D-3D 対応から PnP で各フレーム姿勢を復元(`vis/rerun_visualize.py:432`)。
+- 深度画像は格子解像度(例 96×72)の低解像近似。元2000フレーム全体は D4RT のクリップ長制約により一括処理不可で、代表クリップを処理する。

@@ -399,3 +399,138 @@ def save_trajectory_comparison_to_rrd(
         spawn=False,
     )
     return rrd_path
+
+
+# ---------------------------------------------------------------------------
+# Artifact D: dense scene (RGB + estimated depth + point cloud + camera frustum).
+# ---------------------------------------------------------------------------
+
+
+def _dense_blueprint() -> rrb.Blueprint:
+    return rrb.Blueprint(
+        rrb.Horizontal(
+            rrb.Spatial3DView(origin="world", name="3D"),
+            rrb.Vertical(
+                rrb.Spatial2DView(origin="frame/image", name="rgb"),
+                rrb.Spatial2DView(origin="frame/depth", name="depth"),
+            ),
+            column_shares=[3, 2],
+        ),
+        collapse_panels=True,
+    )
+
+
+def _lattice_indices(
+    grid_uv: FloatArray,
+) -> tuple[NDArray[Any], NDArray[Any], int, int]:
+    """Map regular-grid query points to (row, col) image indices, order-robust."""
+    col_idx = np.unique(np.round(grid_uv[:, 0], 3), return_inverse=True)[1]
+    row_idx = np.unique(np.round(grid_uv[:, 1], 3), return_inverse=True)[1]
+    return row_idx, col_idx, int(row_idx.max()) + 1, int(col_idx.max()) + 1
+
+
+def _log_dense_scene(npz_path: Path, *, max_points: int, use_ransac: bool) -> None:
+    from scripts.check_colmap_trajectory_consistency import (  # noqa: PLC0415
+        camera_center,
+        solve_pnp_pose,
+    )
+
+    data = np.load(npz_path, allow_pickle=True)
+    xyz = np.asarray(data["point_xyz_ref0"], dtype=np.float64)  # [F, P, 3]
+    uv = np.asarray(data["point_uv_px"], dtype=np.float64)  # [F, P, 2]
+    vis = np.asarray(data["point_visibility"], dtype=bool)  # [F, P]
+    is_dynamic = np.asarray(data["point_is_dynamic"], dtype=bool)  # [P]
+    rgb = np.asarray(data["rgb"], dtype=np.uint8)  # [P, 3]
+    grid_uv = np.asarray(data["grid_uv"], dtype=np.float64)  # [P, 2]
+    k = np.asarray(data["ref0_K"], dtype=np.float64)  # [3, 3]
+    frames = np.asarray(data["frames_rgb"], dtype=np.uint8)  # [F, H, W, 3]
+
+    static = ~is_dynamic
+    finite0 = np.isfinite(xyz[0]).all(axis=1)
+    row_idx, col_idx, n_rows, n_cols = _lattice_indices(grid_uv)
+    height, width = int(frames.shape[1]), int(frames.shape[2])
+
+    for f in range(xyz.shape[0]):
+        rr.set_time("frame", sequence=f)
+        rr.log("frame/image", rr.Image(frames[f]))
+
+        finite_f = np.isfinite(xyz[f]).all(axis=1)
+        depth = xyz[f][:, 2].copy()  # fallback: ref0-frame z
+        pnp_mask = static & vis[f] & finite_f & finite0 & np.isfinite(uv[f]).all(axis=1)
+        if int(pnp_mask.sum()) >= 6:
+            pose = solve_pnp_pose(xyz[0][pnp_mask], uv[f][pnp_mask], k, use_ransac)
+            if pose is not None:
+                r_wc, t_wc, _ = pose
+                depth = ((r_wc @ xyz[f].T).T + t_wc)[:, 2].copy()
+                rr.log(
+                    "world/camera",
+                    rr.Transform3D(
+                        translation=camera_center(r_wc, t_wc), mat3x3=r_wc.T
+                    ),
+                )
+                rr.log(
+                    "world/camera",
+                    rr.Pinhole(
+                        image_from_camera=k,
+                        width=width,
+                        height=height,
+                        image_plane_distance=0.3,
+                    ),
+                )
+
+        cloud_mask = vis[f] & finite_f
+        pts, col = _subsample(xyz[f][cloud_mask], rgb[cloud_mask], max_points)
+        if len(pts):
+            rr.log("world/points", rr.Points3D(pts, colors=col, radii=0.02))
+
+        depth_img = np.zeros((n_rows, n_cols), dtype=np.float32)
+        valid = vis[f] & np.isfinite(depth) & (depth > 0)
+        depth_img[row_idx[valid], col_idx[valid]] = depth[valid].astype(np.float32)
+        rr.log("frame/depth", rr.DepthImage(depth_img))
+
+
+def visualize_dense_scene(
+    npz_path: str | Path,
+    *,
+    max_points: int = 500_000,
+    use_ransac: bool = True,
+    app_id: str = DEFAULT_APP_ID,
+) -> None:
+    """Stream a dense D4RT scene (RGB/depth/points/camera) to a spawned viewer."""
+    npz_path = Path(npz_path)
+    if not npz_path.is_file():
+        raise FileNotFoundError(npz_path)
+    _emit(
+        lambda: _log_dense_scene(
+            npz_path, max_points=max_points, use_ransac=use_ransac
+        ),
+        app_id=app_id,
+        rrd_path=None,
+        spawn=True,
+    )
+
+
+def save_dense_scene_to_rrd(
+    npz_path: str | Path,
+    rrd_path: str | Path,
+    *,
+    max_points: int = 500_000,
+    use_ransac: bool = True,
+    app_id: str = DEFAULT_APP_ID,
+) -> Path:
+    """Write a dense D4RT scene (RGB + estimated depth + point cloud + camera frustum).
+
+    Per frame the recording logs the source RGB image, a low-resolution estimated
+    depth image (per-frame-camera z of the dense query grid, camera recovered by
+    PnP on static points), the colored 3D point cloud, and the camera frustum.
+    """
+    npz_path = Path(npz_path)
+    rrd_path = Path(rrd_path)
+    if not npz_path.is_file():
+        raise FileNotFoundError(npz_path)
+    rr.init(app_id, spawn=False)
+    rrd_path.parent.mkdir(parents=True, exist_ok=True)
+    rr.save(str(rrd_path), default_blueprint=_dense_blueprint())
+    _log_dense_scene(npz_path, max_points=max_points, use_ransac=use_ransac)
+    rr.disconnect()
+    return rrd_path
