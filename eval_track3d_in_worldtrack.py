@@ -20,9 +20,13 @@ from typing import Any
 
 import cv2
 import numpy as np
-import torch
 
-from infer_track_3d import _infer_tracks, _resolve_device, _resize_video, _unwrap_state_dict
+from infer_track_3d import (
+    _infer_tracks,
+    _resolve_device,
+    _resize_video,
+    _unwrap_state_dict,
+)
 from src.core import build_logger, load_checkpoint, load_yaml_config, seed_everything
 from src.model import build_model
 
@@ -43,7 +47,9 @@ def _decode_jpeg_rgb(frame_bytes: bytes) -> np.ndarray:
     return cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
 
-def _project_points_to_video_frame(camera_pov_points3d: np.ndarray, camera_intrinsics: np.ndarray) -> np.ndarray:
+def _project_points_to_video_frame(
+    camera_pov_points3d: np.ndarray, camera_intrinsics: np.ndarray
+) -> np.ndarray:
     pts = np.asarray(camera_pov_points3d, dtype=np.float64)
     intr = np.asarray(camera_intrinsics, dtype=np.float64).reshape(-1)
     fx, fy, cx, cy = intr[:4]
@@ -60,7 +66,9 @@ def load_worldtrack_sequence(npz_path: Path, num_frames: int) -> dict[str, Any]:
     tracks_xyz_cam = np.asarray(pack["tracks_XYZ"], dtype=np.float64)
     intrinsics = np.asarray(pack["fx_fy_cx_cy"], dtype=np.float64)
     visibility = np.asarray(pack["visibility"], dtype=bool)
-    extrinsics_w2c_raw = pack["extrinsics_w2c"] if "extrinsics_w2c" in pack.files else None
+    extrinsics_w2c_raw = (
+        pack["extrinsics_w2c"] if "extrinsics_w2c" in pack.files else None
+    )
 
     frame_count = min(
         int(num_frames),
@@ -74,13 +82,17 @@ def load_worldtrack_sequence(npz_path: Path, num_frames: int) -> dict[str, Any]:
     images_jpeg_bytes = images_jpeg_bytes[:frame_count]
     tracks_xyz_cam = tracks_xyz_cam[:frame_count]
     visibility = visibility[:frame_count]
-    video_rgb = np.stack([_decode_jpeg_rgb(frame_bytes) for frame_bytes in images_jpeg_bytes], axis=0)
+    video_rgb = np.stack(
+        [_decode_jpeg_rgb(frame_bytes) for frame_bytes in images_jpeg_bytes], axis=0
+    )
     tracks_uv = _project_points_to_video_frame(tracks_xyz_cam, intrinsics)
 
     if extrinsics_w2c_raw is not None:
         extrinsics_w2c = np.asarray(extrinsics_w2c_raw, dtype=np.float64)[:frame_count]
         first_inv = np.linalg.inv(extrinsics_w2c[0])
-        extrinsics_w2c = np.asarray([extr @ first_inv for extr in extrinsics_w2c], dtype=np.float64)
+        extrinsics_w2c = np.asarray(
+            [extr @ first_inv for extr in extrinsics_w2c], dtype=np.float64
+        )
         extrinsics_c2w = np.linalg.inv(extrinsics_w2c)
         tracks_xyz_world = np.empty_like(tracks_xyz_cam, dtype=np.float64)
         for frame_idx in range(frame_count):
@@ -105,10 +117,16 @@ def load_worldtrack_sequence(npz_path: Path, num_frames: int) -> dict[str, Any]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate D4RT on WorldTrack using the St4RTrack tracking protocol.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate D4RT on WorldTrack using the St4RTrack tracking protocol."
+    )
     parser.add_argument("--model-config", required=True, help="Model config yaml.")
     parser.add_argument("--ckpt-path", required=True, help="Checkpoint path.")
-    parser.add_argument("--data-root", default="data/worldtrack_release", help="WorldTrack root directory.")
+    parser.add_argument(
+        "--data-root",
+        default="data/worldtrack_release",
+        help="WorldTrack root directory.",
+    )
     parser.add_argument(
         "--subsets",
         default="adt_mini,po_mini,pstudio_mini,ds_mini",
@@ -123,12 +141,23 @@ def parse_args() -> argparse.Namespace:
         help="Frames per sequence to evaluate. Default is a large cap, so full WorldTrack cases are used.",
     )
     parser.add_argument("--query-chunk-size", type=int, default=4096)
-    parser.add_argument("--limit-seqs", type=int, default=0, help="Optional cap per subset. <=0 disables.")
-    parser.add_argument("--save-per-sequence", action="store_true", help="Write per-sequence metric JSON files.")
+    parser.add_argument(
+        "--limit-seqs",
+        type=int,
+        default=0,
+        help="Optional cap per subset. <=0 disables.",
+    )
+    parser.add_argument(
+        "--save-per-sequence",
+        action="store_true",
+        help="Write per-sequence metric JSON files.",
+    )
     return parser.parse_args()
 
 
-def _compute_scale_factor_global(gt_points: np.ndarray, pred_points: np.ndarray) -> float:
+def _compute_scale_factor_global(
+    gt_points: np.ndarray, pred_points: np.ndarray
+) -> float:
     gt_flat = np.asarray(gt_points, dtype=np.float64).reshape(-1, 3)
     pred_flat = np.asarray(pred_points, dtype=np.float64).reshape(-1, 3)
     finite = np.isfinite(gt_flat).all(axis=-1) & np.isfinite(pred_flat).all(axis=-1)
@@ -150,7 +179,9 @@ def _scale_per_trajectory(gt_points: np.ndarray, pred_points: np.ndarray) -> np.
     out = pred.copy()
     eps = 1e-12
     for idx in range(gt.shape[1]):
-        finite = np.isfinite(gt[:, idx]).all(axis=-1) & np.isfinite(pred[:, idx]).all(axis=-1)
+        finite = np.isfinite(gt[:, idx]).all(axis=-1) & np.isfinite(pred[:, idx]).all(
+            axis=-1
+        )
         if not np.any(finite):
             continue
         gt_norm = np.linalg.norm(gt[finite, idx], axis=-1)
@@ -164,7 +195,9 @@ def _scale_per_trajectory(gt_points: np.ndarray, pred_points: np.ndarray) -> np.
     return out
 
 
-def _estimate_sim3_closed_form(src: np.ndarray, dst: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+def _estimate_sim3_closed_form(
+    src: np.ndarray, dst: np.ndarray
+) -> tuple[float, np.ndarray, np.ndarray]:
     src = np.asarray(src, dtype=np.float64)
     dst = np.asarray(dst, dtype=np.float64)
     centroid_src = src.mean(axis=0, keepdims=True)
@@ -200,7 +233,9 @@ def _estimate_sim3_ransac(
     for _ in range(int(iterations)):
         subset_idx = rng.choice(src.shape[0], size=3, replace=False)
         try:
-            scale, rot, trans = _estimate_sim3_closed_form(src[subset_idx], dst[subset_idx])
+            scale, rot, trans = _estimate_sim3_closed_form(
+                src[subset_idx], dst[subset_idx]
+            )
         except np.linalg.LinAlgError:
             continue
         transformed = scale * (rot @ src.T).T + trans
@@ -233,7 +268,13 @@ def _compute_average_pts_within_thresh(
     pred_points: np.ndarray,
     scaling: str = "global",
     compute_epe: bool = True,
-) -> tuple[float, np.ndarray, dict[int, float], tuple[float | None, np.ndarray | None, np.ndarray | None], float]:
+) -> tuple[
+    float,
+    np.ndarray,
+    dict[int, float],
+    tuple[float | None, np.ndarray | None, np.ndarray | None],
+    float,
+]:
     gt = np.asarray(gt_points, dtype=np.float64)
     pred = np.asarray(pred_points, dtype=np.float64)
     params: tuple[float | None, np.ndarray | None, np.ndarray | None]
@@ -288,7 +329,11 @@ def _compute_average_pts_within_thresh(
         within_dist = np.isfinite(dists) & (dists <= float(fixed_threshold))
         fractions[int(thr_key)] = float(np.sum(within_dist) / max(total_points, 1))
     avg_pts = float(np.mean(list(fractions.values()))) if fractions else float("nan")
-    epe = float(np.mean(dists[np.isfinite(dists)])) if compute_epe and np.any(np.isfinite(dists)) else float("inf")
+    epe = (
+        float(np.mean(dists[np.isfinite(dists)]))
+        if compute_epe and np.any(np.isfinite(dists))
+        else float("inf")
+    )
     return avg_pts, pred_aligned, fractions, params, epe
 
 
@@ -297,17 +342,21 @@ def _metrics_for_sequence(
     pred_tracks_ref0: np.ndarray,
     compute_dyn: bool = True,
 ) -> dict[str, Any]:
-    avg_pts_global, _, fractions_global, _, epe_global = _compute_average_pts_within_thresh(
-        gt_tracks_world,
-        pred_tracks_ref0,
-        scaling="global",
-        compute_epe=True,
+    avg_pts_global, _, fractions_global, _, epe_global = (
+        _compute_average_pts_within_thresh(
+            gt_tracks_world,
+            pred_tracks_ref0,
+            scaling="global",
+            compute_epe=True,
+        )
     )
-    avg_pts_pertraj, _, fractions_pertraj, _, epe_pertraj = _compute_average_pts_within_thresh(
-        gt_tracks_world,
-        pred_tracks_ref0,
-        scaling="per_traj",
-        compute_epe=True,
+    avg_pts_pertraj, _, fractions_pertraj, _, epe_pertraj = (
+        _compute_average_pts_within_thresh(
+            gt_tracks_world,
+            pred_tracks_ref0,
+            scaling="per_traj",
+            compute_epe=True,
+        )
     )
     avg_pts_sim3, _, fractions_sim3, _, epe_sim3 = _compute_average_pts_within_thresh(
         gt_tracks_world,
@@ -315,11 +364,13 @@ def _metrics_for_sequence(
         scaling="sim3",
         compute_epe=True,
     )
-    avg_pts_sim3_closed, _, fractions_sim3_closed, _, epe_sim3_closed = _compute_average_pts_within_thresh(
-        gt_tracks_world,
-        pred_tracks_ref0,
-        scaling="sim3_closed",
-        compute_epe=True,
+    avg_pts_sim3_closed, _, fractions_sim3_closed, _, epe_sim3_closed = (
+        _compute_average_pts_within_thresh(
+            gt_tracks_world,
+            pred_tracks_ref0,
+            scaling="sim3_closed",
+            compute_epe=True,
+        )
     )
 
     avg_pts_global_dyn = float("nan")
@@ -338,13 +389,21 @@ def _metrics_for_sequence(
         dyn_count = int(dyn_mask.sum())
         dyn_fraction = float(dyn_mask.mean()) if dyn_mask.size > 0 else float("nan")
         if dyn_count > 0:
-            avg_pts_global_dyn, _, fractions_global_dyn, _, epe_global_dyn = _compute_average_pts_within_thresh(
-                gt_tracks_world[:, dyn_mask],
-                pred_tracks_ref0[:, dyn_mask],
-                scaling="global",
-                compute_epe=True,
+            avg_pts_global_dyn, _, fractions_global_dyn, _, epe_global_dyn = (
+                _compute_average_pts_within_thresh(
+                    gt_tracks_world[:, dyn_mask],
+                    pred_tracks_ref0[:, dyn_mask],
+                    scaling="global",
+                    compute_epe=True,
+                )
             )
-            avg_pts_sim3_closed_dyn, _, fractions_sim3_closed_dyn, _, epe_sim3_closed_dyn = _compute_average_pts_within_thresh(
+            (
+                avg_pts_sim3_closed_dyn,
+                _,
+                fractions_sim3_closed_dyn,
+                _,
+                epe_sim3_closed_dyn,
+            ) = _compute_average_pts_within_thresh(
                 gt_tracks_world[:, dyn_mask],
                 pred_tracks_ref0[:, dyn_mask],
                 scaling="sim3_closed",
@@ -402,10 +461,18 @@ def _aggregate_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     summary: dict[str, Any] = {"num_sequences": int(len(results))}
     for key in scalar_keys:
-        values = [float(item[key]) for item in results if np.isfinite(float(item.get(key, float("nan"))))]
+        values = [
+            float(item[key])
+            for item in results
+            if np.isfinite(float(item.get(key, float("nan"))))
+        ]
         summary[key] = float(np.mean(values)) if values else float("nan")
-    summary["total_queries"] = int(sum(int(item.get("num_queries", 0)) for item in results))
-    summary["total_dynamic_queries"] = int(sum(int(item.get("dyn_count", 0)) for item in results))
+    summary["total_queries"] = int(
+        sum(int(item.get("num_queries", 0)) for item in results)
+    )
+    summary["total_dynamic_queries"] = int(
+        sum(int(item.get("dyn_count", 0)) for item in results)
+    )
 
     for frac_key in fraction_keys:
         agg: dict[int, list[float]] = defaultdict(list)
@@ -416,7 +483,9 @@ def _aggregate_results(results: list[dict[str, Any]]) -> dict[str, Any]:
             for thr, value in payload.items():
                 if np.isfinite(float(value)):
                     agg[int(thr)].append(float(value))
-        summary[frac_key] = {int(thr): float(np.mean(vals)) for thr, vals in sorted(agg.items())}
+        summary[frac_key] = {
+            int(thr): float(np.mean(vals)) for thr, vals in sorted(agg.items())
+        }
     return summary
 
 
@@ -451,7 +520,11 @@ def main() -> int:
         raise RuntimeError(f"No model weights found in checkpoint: {ckpt_path}")
     load_result = model.load_state_dict(state_dict, strict=False)
     logger.info("Loaded checkpoint %s", ckpt_path)
-    logger.info("Missing keys: %d  Unexpected keys: %d", len(load_result.missing_keys), len(load_result.unexpected_keys))
+    logger.info(
+        "Missing keys: %d  Unexpected keys: %d",
+        len(load_result.missing_keys),
+        len(load_result.unexpected_keys),
+    )
     device = _resolve_device(args.device)
     model.to(device).eval()
 
@@ -502,19 +575,30 @@ def main() -> int:
 
             visible_mask = np.asarray(sample["visibility"][0], dtype=bool)
             if not np.any(visible_mask):
-                logger.warning("Skipping %s because frame-0 has no visible queries", seq_path.name)
+                logger.warning(
+                    "Skipping %s because frame-0 has no visible queries", seq_path.name
+                )
                 continue
 
-            query_uv = np.asarray(sample["tracks_uv"][0, visible_mask], dtype=np.float64)
+            query_uv = np.asarray(
+                sample["tracks_uv"][0, visible_mask], dtype=np.float64
+            )
             finite_mask = np.isfinite(query_uv).all(axis=-1)
-            depth0 = np.asarray(sample["tracks_xyz_cam"][0, visible_mask, 2], dtype=np.float64)
+            depth0 = np.asarray(
+                sample["tracks_xyz_cam"][0, visible_mask, 2], dtype=np.float64
+            )
             finite_mask &= np.isfinite(depth0) & (np.abs(depth0) > 1e-8)
             if not np.any(finite_mask):
-                logger.warning("Skipping %s because no finite frame-0 visible query UVs remain", seq_path.name)
+                logger.warning(
+                    "Skipping %s because no finite frame-0 visible query UVs remain",
+                    seq_path.name,
+                )
                 continue
 
             query_uv = query_uv[finite_mask]
-            gt_tracks_world = np.asarray(sample["tracks_xyz_world"][:, visible_mask], dtype=np.float64)[:, finite_mask]
+            gt_tracks_world = np.asarray(
+                sample["tracks_xyz_world"][:, visible_mask], dtype=np.float64
+            )[:, finite_mask]
             query_uv_norm = query_uv.astype(np.float32)
             query_uv_norm[:, 0] /= float(max(original_w - 1, 1))
             query_uv_norm[:, 1] /= float(max(original_h - 1, 1))
@@ -526,8 +610,14 @@ def main() -> int:
                 query_uv_norm=query_uv_norm,
                 query_chunk_size=int(args.query_chunk_size),
             )
-            pred_tracks_ref0 = np.asarray(pred_payload["tracks_xyz_ref0"], dtype=np.float64).transpose(1, 0, 2)
-            metrics = _metrics_for_sequence(gt_tracks_world=gt_tracks_world, pred_tracks_ref0=pred_tracks_ref0, compute_dyn=True)
+            pred_tracks_ref0 = np.asarray(
+                pred_payload["tracks_xyz_ref0"], dtype=np.float64
+            ).transpose(1, 0, 2)
+            metrics = _metrics_for_sequence(
+                gt_tracks_world=gt_tracks_world,
+                pred_tracks_ref0=pred_tracks_ref0,
+                compute_dyn=True,
+            )
             _, pred_tracks_aligned_global, _, _, _ = _compute_average_pts_within_thresh(
                 gt_tracks_world,
                 pred_tracks_ref0,
@@ -548,12 +638,18 @@ def main() -> int:
                 chunks = stitch_diagnostics.get("chunks", [])
                 if isinstance(chunks, list):
                     success_chunks = [
-                        item for item in chunks
-                        if isinstance(item, dict) and int(item.get("window_idx", 0)) > 0 and bool(item.get("sim3_success", False))
+                        item
+                        for item in chunks
+                        if isinstance(item, dict)
+                        and int(item.get("window_idx", 0)) > 0
+                        and bool(item.get("sim3_success", False))
                     ]
                     failed_chunks = [
-                        item for item in chunks
-                        if isinstance(item, dict) and int(item.get("window_idx", 0)) > 0 and not bool(item.get("sim3_success", False))
+                        item
+                        for item in chunks
+                        if isinstance(item, dict)
+                        and int(item.get("window_idx", 0)) > 0
+                        and not bool(item.get("sim3_success", False))
                     ]
                 else:
                     chunks = []
@@ -567,7 +663,7 @@ def main() -> int:
                         "stitch_failed_chunks": int(len(failed_chunks)),
                         "stitch_diagnostics": stitch_diagnostics,
                     }
-            )
+                )
             subset_results.append(metrics)
             logger.info(
                 "subset=%s seq=%s APD(global)=%.4f EPE(global)=%.4f queries=%d clip_frames=%d",
@@ -580,17 +676,25 @@ def main() -> int:
             )
             if bool(args.save_per_sequence):
                 per_seq_path = subset_out_dir / f"{sample['video_name']}.json"
-                per_seq_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                per_seq_path.write_text(
+                    json.dumps(metrics, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
 
         subset_summary = _aggregate_results(subset_results)
         subset_summary["sequences"] = subset_results
         all_summary["subsets"][subset] = subset_summary
         subset_summary_path = subset_out_dir / "summary.json"
-        subset_summary_path.write_text(json.dumps(subset_summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        subset_summary_path.write_text(
+            json.dumps(subset_summary, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
         logger.info(_format_subset_summary(subset, subset_summary))
 
     overall_path = output_dir / "summary.json"
-    overall_path.write_text(json.dumps(all_summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    overall_path.write_text(
+        json.dumps(all_summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
     lines = ["WorldTrack D4RT Summary"]
     for subset in subsets:

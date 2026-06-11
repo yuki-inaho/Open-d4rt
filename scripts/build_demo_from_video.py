@@ -8,30 +8,85 @@ import gc
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias, TypedDict, cast
 
 import numpy as np
 import torch
+from beartype import beartype
+from jaxtyping import Bool, Float, Int, UInt8, jaxtyped
+from numpy.typing import NDArray
 from PIL import Image, ImageSequence
 
+# Local script execution needs repo root on sys.path before project imports.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from infer_track_3d import (
+from infer_track_3d import (  # noqa: E402
     _load_video_rgb,
     _resolve_device,
     _resize_video,
     _unwrap_state_dict,
 )
-from src.core import build_logger, load_yaml_config, seed_everything
-from src.model import build_model
-from vis.build_like_demo import (
+from src.core import build_logger, load_yaml_config, seed_everything  # noqa: E402
+from src.model import build_model  # noqa: E402
+from vis.build_like_demo import (  # noqa: E402
     _build_uv_grid,
     _export_demo_data,
     _export_video_from_frames,
     _jsonable_float_array,
 )
+
+FloatArray: TypeAlias = NDArray[np.floating[Any]]
+IntArray: TypeAlias = NDArray[np.integer[Any]]
+BoolArray: TypeAlias = NDArray[np.bool_]
+UInt8Array: TypeAlias = NDArray[np.uint8]
+
+VideoRGB: TypeAlias = UInt8[UInt8Array, "frames height width 3"]
+UvPointArray: TypeAlias = Float[FloatArray, "points 2"]
+UvTrackArray: TypeAlias = Float[FloatArray, "tracks 2"]
+TrackFrameUvArray: TypeAlias = Float[FloatArray, "tracks frames 2"]
+PointFrameUvArray: TypeAlias = Float[FloatArray, "frames points 2"]
+TrackXyzArray: TypeAlias = Float[FloatArray, "tracks frames 3"]
+PointXyzArray: TypeAlias = Float[FloatArray, "frames points 3"]
+TrackVisibilityArray: TypeAlias = Bool[BoolArray, "tracks frames"]
+PointVisibilityArray: TypeAlias = Bool[BoolArray, "frames points"]
+TrackConfidenceArray: TypeAlias = Float[FloatArray, "tracks frames"]
+PointConfidenceArray: TypeAlias = Float[FloatArray, "frames points"]
+PointMotionScoreArray: TypeAlias = Float[FloatArray, "points"]  # noqa: F821
+PointDynamicMaskArray: TypeAlias = Bool[BoolArray, "points"]  # noqa: F821
+PointRgbArray: TypeAlias = UInt8[UInt8Array, "frames points 3"]
+TrackQueryTimeArray: TypeAlias = Int[IntArray, "tracks"]  # noqa: F821
+BoundsVector: TypeAlias = Float[FloatArray, "3"]
+BoundsRadius: TypeAlias = Float[FloatArray, "1"]
+IntrinsicsMatrix: TypeAlias = Float[FloatArray, "3 3"]
+
+
+class DemoPackage(TypedDict):
+    num_frames: int
+    video_width: int
+    video_height: int
+    clip_frames: int
+    track_stitch_diagnostics: dict[str, Any]
+    track_query_uv_px: UvTrackArray
+    track_query_t_src: TrackQueryTimeArray
+    track_xyz_ref0: TrackXyzArray
+    track_uv_px: TrackFrameUvArray
+    track_visibility: TrackVisibilityArray
+    track_confidence: TrackConfidenceArray
+    point_query_uv_px: UvPointArray
+    point_xyz_ref0: PointXyzArray
+    point_visibility: PointVisibilityArray
+    point_uv_px: PointFrameUvArray
+    point_confidence: PointConfidenceArray
+    point_motion_score: PointMotionScoreArray
+    point_is_dynamic: PointDynamicMaskArray
+    point_rgb: PointRgbArray
+    bounds_min: BoundsVector
+    bounds_max: BoundsVector
+    bounds_center: BoundsVector
+    bounds_radius: BoundsRadius
+    ref0_K: IntrinsicsMatrix
 
 
 def _positive_int(raw: str) -> int:
@@ -83,12 +138,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _load_frames(path: Path, max_frames: int) -> tuple[np.ndarray, float]:
+@jaxtyped(typechecker=beartype)
+def _load_frames(path: Path, max_frames: int) -> tuple[VideoRGB, float]:
+    video_decode_error: Exception | None = None
     try:
         return _load_video_rgb(path, max_frames=max_frames)
-    except Exception as video_error:
+    except Exception as exc:
         if path.suffix.lower() != ".gif":
             raise
+        video_decode_error = exc
 
     frames: list[np.ndarray] = []
     try:
@@ -103,8 +161,37 @@ def _load_frames(path: Path, max_frames: int) -> tuple[np.ndarray, float]:
     except Exception as gif_error:
         raise RuntimeError(f"Failed to decode GIF fallback for {path}") from gif_error
     if not frames:
-        raise RuntimeError(f"No frames decoded from GIF: {path}") from video_error
+        raise RuntimeError(
+            f"No frames decoded from GIF: {path}"
+        ) from video_decode_error
     return np.stack(frames, axis=0), float(fps)
+
+
+@jaxtyped(typechecker=beartype)
+def _validate_demo_arrays(
+    *,
+    video_rgb: VideoRGB,
+    track_query_uv_px: UvTrackArray,
+    track_query_t_src: TrackQueryTimeArray,
+    track_xyz_ref0: TrackXyzArray,
+    track_uv_px: TrackFrameUvArray,
+    track_visibility: TrackVisibilityArray,
+    track_confidence: TrackConfidenceArray,
+    point_query_uv_px: UvPointArray,
+    point_xyz_ref0: PointXyzArray,
+    point_visibility: PointVisibilityArray,
+    point_uv_px: PointFrameUvArray,
+    point_confidence: PointConfidenceArray,
+    point_motion_score: PointMotionScoreArray,
+    point_is_dynamic: PointDynamicMaskArray,
+    point_rgb: PointRgbArray,
+    bounds_min: BoundsVector,
+    bounds_max: BoundsVector,
+    bounds_center: BoundsVector,
+    bounds_radius: BoundsRadius,
+    ref0_K: IntrinsicsMatrix,
+) -> None:
+    """Validate key demo-package array contracts before writing viewer assets."""
 
 
 def _load_checkpoint_model(path: Path) -> dict[str, torch.Tensor]:
@@ -122,13 +209,35 @@ def _write_demo_package(
     *,
     output_dir: Path,
     input_path: Path,
-    package: dict[str, Any],
-    video_rgb: np.ndarray,
+    package: DemoPackage,
+    video_rgb: VideoRGB,
     fps: float,
 ) -> None:
     assets_dir = output_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     output_fps = float(fps if fps > 0.0 else 8.0)
+    _validate_demo_arrays(
+        video_rgb=video_rgb,
+        track_query_uv_px=package["track_query_uv_px"],
+        track_query_t_src=package["track_query_t_src"],
+        track_xyz_ref0=package["track_xyz_ref0"],
+        track_uv_px=package["track_uv_px"],
+        track_visibility=package["track_visibility"],
+        track_confidence=package["track_confidence"],
+        point_query_uv_px=package["point_query_uv_px"],
+        point_xyz_ref0=package["point_xyz_ref0"],
+        point_visibility=package["point_visibility"],
+        point_uv_px=package["point_uv_px"],
+        point_confidence=package["point_confidence"],
+        point_motion_score=package["point_motion_score"],
+        point_is_dynamic=package["point_is_dynamic"],
+        point_rgb=package["point_rgb"],
+        bounds_min=package["bounds_min"],
+        bounds_max=package["bounds_max"],
+        bounds_center=package["bounds_center"],
+        bounds_radius=package["bounds_radius"],
+        ref0_K=package["ref0_K"],
+    )
 
     meta = {
         "fps": output_fps,
@@ -158,30 +267,30 @@ def _write_demo_package(
         },
     }
 
-    def int_list(name: str) -> list[Any]:
-        return np.asarray(package[name], dtype=np.int32).tolist()
+    def int_list(value: Any) -> list[Any]:
+        return np.asarray(value, dtype=np.int32).tolist()
 
     data_json = {
         "meta": meta,
         "tracks": {
             "queryUvPx": _jsonable_float_array(package["track_query_uv_px"], ndigits=3),
-            "queryTSrc": int_list("track_query_t_src"),
+            "queryTSrc": int_list(package["track_query_t_src"]),
             "xyzRef0": _jsonable_float_array(package["track_xyz_ref0"], ndigits=5),
             "uvPx": _jsonable_float_array(package["track_uv_px"], ndigits=3),
-            "visibility": int_list("track_visibility"),
+            "visibility": int_list(package["track_visibility"]),
             "confidence": _jsonable_float_array(package["track_confidence"], ndigits=4),
         },
         "points": {
             "queryUvPx": _jsonable_float_array(package["point_query_uv_px"], ndigits=3),
             "xyzRef0": _jsonable_float_array(package["point_xyz_ref0"], ndigits=5),
-            "visibility": int_list("point_visibility"),
-            "rgb": int_list("point_rgb"),
+            "visibility": int_list(package["point_visibility"]),
+            "rgb": int_list(package["point_rgb"]),
             "uvPx": _jsonable_float_array(package["point_uv_px"], ndigits=3),
             "confidence": _jsonable_float_array(package["point_confidence"], ndigits=4),
             "motionScore": _jsonable_float_array(
                 package["point_motion_score"], ndigits=5
             ),
-            "isDynamic": int_list("point_is_dynamic"),
+            "isDynamic": int_list(package["point_is_dynamic"]),
         },
         "pointsRaw": {
             "xyzRef0": _jsonable_float_array(package["point_xyz_ref0"], ndigits=5),
@@ -276,7 +385,7 @@ def main() -> int:
     _write_demo_package(
         output_dir=output_dir,
         input_path=input_path,
-        package=package,
+        package=cast(DemoPackage, package),
         video_rgb=video_rgb,
         fps=fps,
     )

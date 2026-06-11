@@ -7,6 +7,7 @@ import argparse
 import colorsys
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -20,15 +21,13 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-import sys
-
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from infer_track_3d import _resolve_device, _resize_video, _unwrap_state_dict
-from src.core import build_logger, load_checkpoint, load_yaml_config, seed_everything
-from src.model import build_model
-from vis.build_like_demo import (
+from infer_track_3d import _resolve_device, _resize_video, _unwrap_state_dict  # noqa: E402
+from src.core import build_logger, load_checkpoint, load_yaml_config, seed_everything  # noqa: E402
+from src.model import build_model  # noqa: E402
+from vis.build_like_demo import (  # noqa: E402
     _build_uv_grid,
     _compute_point_motion_scores,
     _export_demo_data,
@@ -39,10 +38,14 @@ from vis.build_like_demo import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build a vis_like_demo package from one WorldTrack npz.")
+    parser = argparse.ArgumentParser(
+        description="Build a vis_like_demo package from one WorldTrack npz."
+    )
     parser.add_argument("--config", required=True, help="Model config yaml.")
     parser.add_argument("--ckpt-path", required=True, help="Checkpoint path.")
-    parser.add_argument("--worldtrack-npz", required=True, help="Path to one WorldTrack npz sample.")
+    parser.add_argument(
+        "--worldtrack-npz", required=True, help="Path to one WorldTrack npz sample."
+    )
     parser.add_argument("--output-dir", required=True, help="Output package directory.")
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     parser.add_argument("--num-frames", type=int, default=64)
@@ -54,16 +57,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--point-grid-cols", type=int, default=64)
     parser.add_argument("--point-grid-rows", type=int, default=64)
     parser.add_argument("--point-max-points", type=int, default=4096)
-    parser.add_argument("--track-max-points", type=int, default=256, help="Max GT/pred tracks stored in viewer package. <=0 keeps all.")
+    parser.add_argument(
+        "--track-max-points",
+        type=int,
+        default=256,
+        help="Max GT/pred tracks stored in viewer package. <=0 keeps all.",
+    )
     parser.add_argument("--track-min-visible-frames", type=int, default=6)
     parser.add_argument("--track-viz-max-points", type=int, default=300)
     parser.add_argument("--track-trace-frames", type=int, default=8)
     parser.add_argument("--render-track-videos", action="store_true", default=True)
-    parser.add_argument("--no-render-track-videos", action="store_false", dest="render_track_videos")
+    parser.add_argument(
+        "--no-render-track-videos", action="store_false", dest="render_track_videos"
+    )
     parser.add_argument("--export-depth-video", action="store_true", default=True)
-    parser.add_argument("--no-export-depth-video", action="store_false", dest="export_depth_video")
-    parser.add_argument("--suppress-depth-boundary-tracks", action="store_true", default=True)
-    parser.add_argument("--no-suppress-depth-boundary-tracks", action="store_false", dest="suppress_depth_boundary_tracks")
+    parser.add_argument(
+        "--no-export-depth-video", action="store_false", dest="export_depth_video"
+    )
+    parser.add_argument(
+        "--suppress-depth-boundary-tracks", action="store_true", default=True
+    )
+    parser.add_argument(
+        "--no-suppress-depth-boundary-tracks",
+        action="store_false",
+        dest="suppress_depth_boundary_tracks",
+    )
     parser.add_argument("--depth-boundary-rel-thresh", type=float, default=0.12)
     parser.add_argument("--depth-boundary-abs-thresh", type=float, default=0.20)
     parser.add_argument("--depth-boundary-dilate", type=int, default=1)
@@ -92,7 +110,9 @@ def _decode_jpeg_rgb(frame_bytes: bytes) -> np.ndarray:
     return cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
 
-def _project_points_to_video_frame(camera_pov_points3d: np.ndarray, camera_intrinsics: np.ndarray) -> np.ndarray:
+def _project_points_to_video_frame(
+    camera_pov_points3d: np.ndarray, camera_intrinsics: np.ndarray
+) -> np.ndarray:
     pts = np.asarray(camera_pov_points3d, dtype=np.float64)
     intr = np.asarray(camera_intrinsics, dtype=np.float64).reshape(-1)
     fx, fy, cx, cy = intr[:4]
@@ -123,22 +143,33 @@ def load_worldtrack_sequence(npz_path: Path, num_frames: int) -> dict[str, Any]:
     tracks_xyz_cam = np.asarray(pack["tracks_XYZ"], dtype=np.float64)
     intrinsics = np.asarray(pack["fx_fy_cx_cy"], dtype=np.float64)
     visibility = np.asarray(pack["visibility"], dtype=bool)
-    extrinsics_w2c_raw = pack["extrinsics_w2c"] if "extrinsics_w2c" in pack.files else None
+    extrinsics_w2c_raw = (
+        pack["extrinsics_w2c"] if "extrinsics_w2c" in pack.files else None
+    )
 
-    frame_count = min(int(num_frames), int(images_jpeg_bytes.shape[0]), int(tracks_xyz_cam.shape[0]), int(visibility.shape[0]))
+    frame_count = min(
+        int(num_frames),
+        int(images_jpeg_bytes.shape[0]),
+        int(tracks_xyz_cam.shape[0]),
+        int(visibility.shape[0]),
+    )
     if frame_count <= 0:
         raise RuntimeError(f"No usable frames in {npz_path}")
 
     images_jpeg_bytes = images_jpeg_bytes[:frame_count]
     tracks_xyz_cam = tracks_xyz_cam[:frame_count]
     visibility = visibility[:frame_count]
-    video_rgb = np.stack([_decode_jpeg_rgb(frame_bytes) for frame_bytes in images_jpeg_bytes], axis=0)
+    video_rgb = np.stack(
+        [_decode_jpeg_rgb(frame_bytes) for frame_bytes in images_jpeg_bytes], axis=0
+    )
     tracks_uv = _project_points_to_video_frame(tracks_xyz_cam, intrinsics)
 
     if extrinsics_w2c_raw is not None:
         extrinsics_w2c = np.asarray(extrinsics_w2c_raw, dtype=np.float64)[:frame_count]
         first_inv = np.linalg.inv(extrinsics_w2c[0])
-        extrinsics_w2c = np.asarray([extr @ first_inv for extr in extrinsics_w2c], dtype=np.float64)
+        extrinsics_w2c = np.asarray(
+            [extr @ first_inv for extr in extrinsics_w2c], dtype=np.float64
+        )
         extrinsics_c2w = np.linalg.inv(extrinsics_w2c)
         tracks_xyz_world = np.empty_like(tracks_xyz_cam, dtype=np.float64)
         for frame_idx in range(frame_count):
@@ -164,23 +195,35 @@ def load_worldtrack_sequence(npz_path: Path, num_frames: int) -> dict[str, Any]:
 
 def _worldtrack_gt_camera_data(sample: dict[str, Any]) -> dict[str, np.ndarray]:
     num_frames = int(sample["video_rgb"].shape[0])
-    fx, fy, cx, cy = [float(v) for v in np.asarray(sample["intrinsics"], dtype=np.float32).reshape(-1).tolist()[:4]]
+    fx, fy, cx, cy = [
+        float(v)
+        for v in np.asarray(sample["intrinsics"], dtype=np.float32)
+        .reshape(-1)
+        .tolist()[:4]
+    ]
     k = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32)
     k_seq = np.tile(k[None, :, :], (num_frames, 1, 1))
     t_ref0_cam = np.linalg.inv(np.asarray(sample["extrinsics_w2c"], dtype=np.float32))
     return {"K": k_seq, "T_ref0_cam": t_ref0_cam}
 
 
-def _compute_scale_factor_global(gt_points: np.ndarray, pred_points: np.ndarray) -> float:
+def _compute_scale_factor_global(
+    gt_points: np.ndarray, pred_points: np.ndarray
+) -> float:
     gt_flat = np.asarray(gt_points, dtype=np.float64).reshape(-1, 3)
     pred_flat = np.asarray(pred_points, dtype=np.float64).reshape(-1, 3)
     gt_norm = np.linalg.norm(gt_flat, axis=-1)
     pred_norm = np.linalg.norm(pred_flat, axis=-1)
     eps = 1e-12
-    return float(np.median(np.maximum(gt_norm, eps)) / max(float(np.median(np.maximum(pred_norm, eps))), eps))
+    return float(
+        np.median(np.maximum(gt_norm, eps))
+        / max(float(np.median(np.maximum(pred_norm, eps))), eps)
+    )
 
 
-def align_tracks_global(gt_tracks_world: np.ndarray, pred_tracks_ref0: np.ndarray) -> tuple[np.ndarray, float]:
+def align_tracks_global(
+    gt_tracks_world: np.ndarray, pred_tracks_ref0: np.ndarray
+) -> tuple[np.ndarray, float]:
     scale = _compute_scale_factor_global(gt_tracks_world, pred_tracks_ref0)
     return np.asarray(pred_tracks_ref0, dtype=np.float64) * float(scale), float(scale)
 
@@ -232,13 +275,20 @@ def _sample_track_subset(
         idx = np.arange(num_points, dtype=np.int64)
     else:
         rng = np.random.default_rng(0)
-        idx = np.sort(rng.choice(num_points, size=int(max_points), replace=False).astype(np.int64))
+        idx = np.sort(
+            rng.choice(num_points, size=int(max_points), replace=False).astype(np.int64)
+        )
     return gt_tracks_world[:, idx], pred_tracks_world[:, idx], visibility_tq[:, idx]
 
 
-def _project_world_tracks_to_uv(points_world_tq3: np.ndarray, extrinsics_w2c: np.ndarray, intrinsics: np.ndarray) -> np.ndarray:
+def _project_world_tracks_to_uv(
+    points_world_tq3: np.ndarray, extrinsics_w2c: np.ndarray, intrinsics: np.ndarray
+) -> np.ndarray:
     num_frames = int(points_world_tq3.shape[0])
-    fx, fy, cx, cy = [float(v) for v in np.asarray(intrinsics, dtype=np.float64).reshape(-1).tolist()[:4]]
+    fx, fy, cx, cy = [
+        float(v)
+        for v in np.asarray(intrinsics, dtype=np.float64).reshape(-1).tolist()[:4]
+    ]
     out = np.full((num_frames, points_world_tq3.shape[1], 2), np.nan, dtype=np.float32)
     for t in range(num_frames):
         rot = extrinsics_w2c[t, :3, :3]
@@ -257,7 +307,11 @@ def _figure_to_rgb(fig: plt.Figure) -> np.ndarray:
     canvas = FigureCanvasAgg(fig)
     canvas.draw()
     width, height = canvas.get_width_height()
-    return np.frombuffer(canvas.buffer_rgba(), dtype=np.uint8).reshape(height, width, 4)[..., :3].copy()
+    return (
+        np.frombuffer(canvas.buffer_rgba(), dtype=np.uint8)
+        .reshape(height, width, 4)[..., :3]
+        .copy()
+    )
 
 
 def _disable_encoder_pretrain(cfg: Any) -> None:
@@ -297,22 +351,47 @@ def render_track_comparison_videos(
         for qi in range(int(gt_subset.shape[1])):
             color = tuple(int(v) for v in colors[qi].tolist())
             for hist_idx in range(max(0, frame_idx - int(trace_frames)), frame_idx):
-                if bool(vis_subset[hist_idx, qi]) and bool(vis_subset[hist_idx + 1, qi]):
+                if bool(vis_subset[hist_idx, qi]) and bool(
+                    vis_subset[hist_idx + 1, qi]
+                ):
                     p0 = gt_uv[hist_idx, qi]
                     p1 = gt_uv[hist_idx + 1, qi]
                     if np.isfinite(p0).all() and np.isfinite(p1).all():
-                        cv2.line(frame, tuple(np.rint(p0).astype(np.int32)), tuple(np.rint(p1).astype(np.int32)), color, 1, cv2.LINE_AA)
+                        cv2.line(
+                            frame,
+                            tuple(np.rint(p0).astype(np.int32)),
+                            tuple(np.rint(p1).astype(np.int32)),
+                            color,
+                            1,
+                            cv2.LINE_AA,
+                        )
                     p0p = pred_uv[hist_idx, qi]
                     p1p = pred_uv[hist_idx + 1, qi]
                     if np.isfinite(p0p).all() and np.isfinite(p1p).all():
-                        cv2.line(frame, tuple(np.rint(p0p).astype(np.int32)), tuple(np.rint(p1p).astype(np.int32)), color, 1, cv2.LINE_AA)
+                        cv2.line(
+                            frame,
+                            tuple(np.rint(p0p).astype(np.int32)),
+                            tuple(np.rint(p1p).astype(np.int32)),
+                            color,
+                            1,
+                            cv2.LINE_AA,
+                        )
             if bool(vis_subset[frame_idx, qi]):
                 gt_p = gt_uv[frame_idx, qi]
                 pred_p = pred_uv[frame_idx, qi]
                 if np.isfinite(gt_p).all():
-                    cv2.circle(frame, tuple(np.rint(gt_p).astype(np.int32)), 3, color, -1)
+                    cv2.circle(
+                        frame, tuple(np.rint(gt_p).astype(np.int32)), 3, color, -1
+                    )
                 if np.isfinite(pred_p).all():
-                    cv2.drawMarker(frame, tuple(np.rint(pred_p).astype(np.int32)), color, markerType=cv2.MARKER_CROSS, markerSize=10, thickness=1)
+                    cv2.drawMarker(
+                        frame,
+                        tuple(np.rint(pred_p).astype(np.int32)),
+                        color,
+                        markerType=cv2.MARKER_CROSS,
+                        markerSize=10,
+                        thickness=1,
+                    )
         frames_2d.append(frame)
     frames_2d_np = np.stack(frames_2d, axis=0)
     video_2d_name, poster_2d_name = _export_video_from_frames(
@@ -322,7 +401,11 @@ def render_track_comparison_videos(
     )
 
     valid = np.isfinite(gt_subset).all(axis=-1) | np.isfinite(pred_subset).all(axis=-1)
-    flat = np.concatenate([gt_subset[valid], pred_subset[valid]], axis=0) if np.any(valid) else np.zeros((1, 3), dtype=np.float32)
+    flat = (
+        np.concatenate([gt_subset[valid], pred_subset[valid]], axis=0)
+        if np.any(valid)
+        else np.zeros((1, 3), dtype=np.float32)
+    )
     xyz_min = np.nanmin(flat, axis=0)
     xyz_max = np.nanmax(flat, axis=0)
     center = (xyz_min + xyz_max) * 0.5
@@ -333,7 +416,10 @@ def render_track_comparison_videos(
         fig = plt.figure(figsize=(10, 5), dpi=140)
         ax_gt = fig.add_subplot(1, 2, 1, projection="3d")
         ax_pred = fig.add_subplot(1, 2, 2, projection="3d")
-        for ax, title in ((ax_gt, "GT Tracks"), (ax_pred, "Pred Tracks (Global Aligned)")):
+        for ax, title in (
+            (ax_gt, "GT Tracks"),
+            (ax_pred, "Pred Tracks (Global Aligned)"),
+        ):
             ax.set_title(title)
             ax.set_xlim(center[0] - half_extent, center[0] + half_extent)
             ax.set_ylim(center[1] - half_extent, center[1] + half_extent)
@@ -347,8 +433,12 @@ def render_track_comparison_videos(
             t0 = max(0, frame_idx - int(trace_frames))
             gt_hist = gt_subset[t0 : frame_idx + 1, qi]
             pred_hist = pred_subset[t0 : frame_idx + 1, qi]
-            gt_ok = np.isfinite(gt_hist).all(axis=-1) & vis_subset[t0 : frame_idx + 1, qi]
-            pred_ok = np.isfinite(pred_hist).all(axis=-1) & vis_subset[t0 : frame_idx + 1, qi]
+            gt_ok = (
+                np.isfinite(gt_hist).all(axis=-1) & vis_subset[t0 : frame_idx + 1, qi]
+            )
+            pred_ok = (
+                np.isfinite(pred_hist).all(axis=-1) & vis_subset[t0 : frame_idx + 1, qi]
+            )
             if int(gt_ok.sum()) >= 2:
                 pts = gt_hist[gt_ok]
                 ax_gt.plot(pts[:, 0], pts[:, 1], pts[:, 2], color=rgb, linewidth=1.2)
@@ -361,7 +451,14 @@ def render_track_comparison_videos(
                 if np.isfinite(gt_now).all():
                     ax_gt.scatter(gt_now[0], gt_now[1], gt_now[2], color=rgb, s=18)
                 if np.isfinite(pred_now).all():
-                    ax_pred.scatter(pred_now[0], pred_now[1], pred_now[2], color=rgb, s=18, marker="x")
+                    ax_pred.scatter(
+                        pred_now[0],
+                        pred_now[1],
+                        pred_now[2],
+                        color=rgb,
+                        s=18,
+                        marker="x",
+                    )
         fig.tight_layout()
         frames_3d.append(_figure_to_rgb(fig))
         plt.close(fig)
@@ -386,7 +483,9 @@ def _colorize_depth_map(depth_hw: np.ndarray, vmin: float, vmax: float) -> np.nd
     if not np.any(valid):
         return out
     norm = np.clip((depth - float(vmin)) / max(float(vmax - vmin), 1e-6), 0.0, 1.0)
-    color = cv2.applyColorMap(np.rint(norm * 255.0).astype(np.uint8), cv2.COLORMAP_TURBO)
+    color = cv2.applyColorMap(
+        np.rint(norm * 255.0).astype(np.uint8), cv2.COLORMAP_TURBO
+    )
     out[valid] = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)[valid]
     return out
 
@@ -410,7 +509,9 @@ def export_predicted_depth_video(
     image_h = int(package["video_height"])
     image_w = int(package["video_width"])
     depth_raw = np.full((num_frames, image_h, image_w), np.nan, dtype=np.float32)
-    coarse_depth = np.full((num_frames, int(grid_rows), int(grid_cols)), np.nan, dtype=np.float32)
+    coarse_depth = np.full(
+        (num_frames, int(grid_rows), int(grid_cols)), np.nan, dtype=np.float32
+    )
 
     use_grid = int(grid_rows) * int(grid_cols) == int(point_xyz_ref0.shape[1])
     for frame_idx in range(num_frames):
@@ -420,18 +521,30 @@ def export_predicted_depth_video(
         if not np.any(vis):
             continue
         pts = xyz[vis]
-        pts_h = np.concatenate([pts, np.ones((pts.shape[0], 1), dtype=np.float32)], axis=1)
+        pts_h = np.concatenate(
+            [pts, np.ones((pts.shape[0], 1), dtype=np.float32)], axis=1
+        )
         cam = (pose @ pts_h.T).T[:, :3]
         z = cam[:, 2]
         z = np.where(np.isfinite(z) & (z > 1e-6), z, np.nan)
         if use_grid:
-            depth_grid = np.full((int(grid_rows) * int(grid_cols),), np.nan, dtype=np.float32)
+            depth_grid = np.full(
+                (int(grid_rows) * int(grid_cols),), np.nan, dtype=np.float32
+            )
             depth_grid[np.flatnonzero(vis)] = z.astype(np.float32)
             coarse_depth[frame_idx] = depth_grid.reshape(int(grid_rows), int(grid_cols))
             mask = np.isfinite(coarse_depth[frame_idx]).astype(np.float32)
-            depth_up = cv2.resize(coarse_depth[frame_idx], (image_w, image_h), interpolation=cv2.INTER_LINEAR)
-            mask_up = cv2.resize(mask, (image_w, image_h), interpolation=cv2.INTER_LINEAR)
-            depth_raw[frame_idx] = np.where(mask_up > 1e-3, depth_up, np.nan).astype(np.float32)
+            depth_up = cv2.resize(
+                coarse_depth[frame_idx],
+                (image_w, image_h),
+                interpolation=cv2.INTER_LINEAR,
+            )
+            mask_up = cv2.resize(
+                mask, (image_w, image_h), interpolation=cv2.INTER_LINEAR
+            )
+            depth_raw[frame_idx] = np.where(mask_up > 1e-3, depth_up, np.nan).astype(
+                np.float32
+            )
         else:
             uv = point_uv[frame_idx, vis]
             xy = np.rint(uv).astype(np.int32)
@@ -446,7 +559,9 @@ def export_predicted_depth_video(
             for p_xy, p_z in zip(xy[inside], z[inside], strict=False):
                 x, y = int(p_xy[0]), int(p_xy[1])
                 prev = depth_raw[frame_idx, y, x]
-                depth_raw[frame_idx, y, x] = float(p_z) if not np.isfinite(prev) else float(min(prev, p_z))
+                depth_raw[frame_idx, y, x] = (
+                    float(p_z) if not np.isfinite(prev) else float(min(prev, p_z))
+                )
 
     valid = np.isfinite(depth_raw) & (depth_raw > 0.0)
     if not np.any(valid):
@@ -454,7 +569,13 @@ def export_predicted_depth_video(
     depth_vals = depth_raw[valid]
     vmin = float(np.nanpercentile(depth_vals, 5.0))
     vmax = float(np.nanpercentile(depth_vals, 95.0))
-    depth_rgb = np.stack([_colorize_depth_map(depth_raw[t], vmin=vmin, vmax=vmax) for t in range(num_frames)], axis=0)
+    depth_rgb = np.stack(
+        [
+            _colorize_depth_map(depth_raw[t], vmin=vmin, vmax=vmax)
+            for t in range(num_frames)
+        ],
+        axis=0,
+    )
     video_name, poster_name = _export_video_from_frames(
         video_rgb=depth_rgb,
         fps=15.0,
@@ -505,8 +626,12 @@ def build_worldtrack_demo_package(
 
     sample = load_worldtrack_sequence(npz_path=npz_path, num_frames=int(num_frames))
     video_rgb = np.asarray(sample["video_rgb"], dtype=np.uint8)
-    image_size = cfg.get_path("model.input.image_size", [int(video_rgb.shape[1]), int(video_rgb.shape[2])])
-    video_model_rgb = _resize_video(video_rgb, image_hw=(int(image_size[0]), int(image_size[1])))
+    image_size = cfg.get_path(
+        "model.input.image_size", [int(video_rgb.shape[1]), int(video_rgb.shape[2])]
+    )
+    video_model_rgb = _resize_video(
+        video_rgb, image_hw=(int(image_size[0]), int(image_size[1]))
+    )
 
     gt_camera_data = _worldtrack_gt_camera_data(sample)
     predicted_camera_data = _predict_camera_branches(
@@ -535,9 +660,15 @@ def build_worldtrack_demo_package(
     keep = np.isfinite(query_uv).all(axis=-1) & np.isfinite(depth0) & (depth0 > 1e-6)
     if not np.any(keep):
         raise RuntimeError(f"No valid frame-0 visible queries in {npz_path}")
-    gt_tracks_world_all = np.asarray(sample["tracks_xyz_world"][:, visible_mask], dtype=np.float32)[:, keep]
-    track_visibility_all = np.asarray(sample["visibility"][:, visible_mask], dtype=bool)[:, keep]
-    track_query_uv_all = np.asarray(sample["tracks_uv"][0, visible_mask], dtype=np.float32)[keep]
+    gt_tracks_world_all = np.asarray(
+        sample["tracks_xyz_world"][:, visible_mask], dtype=np.float32
+    )[:, keep]
+    track_visibility_all = np.asarray(
+        sample["visibility"][:, visible_mask], dtype=bool
+    )[:, keep]
+    track_query_uv_all = np.asarray(
+        sample["tracks_uv"][0, visible_mask], dtype=np.float32
+    )[keep]
     selected = _select_worldtrack_track_indices(
         gt_tracks_world_tq3=gt_tracks_world_all,
         visibility_tq=track_visibility_all,
@@ -545,13 +676,17 @@ def build_worldtrack_demo_package(
         min_visible_frames=int(track_min_visible_frames),
     )
     if selected.size <= 0:
-        raise RuntimeError(f"No WorldTrack queries remained after selection in {npz_path}")
+        raise RuntimeError(
+            f"No WorldTrack queries remained after selection in {npz_path}"
+        )
 
     track_query_uv_px = track_query_uv_all[selected]
     track_query_t_src = np.zeros((track_query_uv_px.shape[0],), dtype=np.int64)
     gt_tracks_world = gt_tracks_world_all[:, selected]
     track_visibility = track_visibility_all[:, selected]
-    track_uv_gt = np.asarray(sample["tracks_uv"][:, visible_mask], dtype=np.float32)[:, keep][:, selected]
+    track_uv_gt = np.asarray(sample["tracks_uv"][:, visible_mask], dtype=np.float32)[
+        :, keep
+    ][:, selected]
 
     package = _export_demo_data(
         model=model,
@@ -576,15 +711,29 @@ def build_worldtrack_demo_package(
         umeyama_slide_window_dense=bool(umeyama_slide_window_dense),
     )
 
-    pred_tracks_raw = np.transpose(np.asarray(package["track_xyz_ref0"], dtype=np.float64), (1, 0, 2))
-    pred_tracks_aligned, scale_global = align_tracks_global(gt_tracks_world, pred_tracks_raw)
-    pred_tracks_aligned_qt3 = np.transpose(pred_tracks_aligned, (1, 0, 2)).astype(np.float32)
-    point_xyz_aligned = np.asarray(package["point_xyz_ref0"], dtype=np.float32) * float(scale_global)
+    pred_tracks_raw = np.transpose(
+        np.asarray(package["track_xyz_ref0"], dtype=np.float64), (1, 0, 2)
+    )
+    pred_tracks_aligned, scale_global = align_tracks_global(
+        gt_tracks_world, pred_tracks_raw
+    )
+    pred_tracks_aligned_qt3 = np.transpose(pred_tracks_aligned, (1, 0, 2)).astype(
+        np.float32
+    )
+    point_xyz_aligned = np.asarray(package["point_xyz_ref0"], dtype=np.float32) * float(
+        scale_global
+    )
 
-    pred_camera_k_seq = None if package["pred_camera_K_seq"] is None else np.asarray(package["pred_camera_K_seq"], dtype=np.float32)
+    pred_camera_k_seq = (
+        None
+        if package["pred_camera_K_seq"] is None
+        else np.asarray(package["pred_camera_K_seq"], dtype=np.float32)
+    )
     pred_camera_t_ref0_cam = None
     if package["pred_camera_T_ref0_cam"] is not None:
-        pred_camera_t_ref0_cam = np.asarray(package["pred_camera_T_ref0_cam"], dtype=np.float32).copy()
+        pred_camera_t_ref0_cam = np.asarray(
+            package["pred_camera_T_ref0_cam"], dtype=np.float32
+        ).copy()
         pred_camera_t_ref0_cam[:, :3, 3] *= float(scale_global)
 
     depth_manifest = None
@@ -648,14 +797,24 @@ def build_worldtrack_demo_package(
             "TRef0Cam": _jsonable_float_array(package["camera_T_ref0_cam"], ndigits=6),
             "source": "worldtrack_gt",
         },
-        "cameraPred": None if package["pred_camera_K_seq"] is None else {
+        "cameraPred": None
+        if package["pred_camera_K_seq"] is None
+        else {
             "K": _jsonable_float_array(package["pred_camera_K_seq"], ndigits=5),
-            "TRef0Cam": _jsonable_float_array(package["pred_camera_T_ref0_cam"], ndigits=6),
-            "validIntrinsics": package["pred_camera_valid_intrinsics"].astype(np.int32).tolist(),
-            "validExtrinsics": package["pred_camera_valid_extrinsics"].astype(np.int32).tolist(),
+            "TRef0Cam": _jsonable_float_array(
+                package["pred_camera_T_ref0_cam"], ndigits=6
+            ),
+            "validIntrinsics": package["pred_camera_valid_intrinsics"]
+            .astype(np.int32)
+            .tolist(),
+            "validExtrinsics": package["pred_camera_valid_extrinsics"]
+            .astype(np.int32)
+            .tolist(),
             "source": "d4rt_queries",
         },
-        "depthPred": None if depth_manifest is None else {
+        "depthPred": None
+        if depth_manifest is None
+        else {
             "video": f"assets/{depth_manifest['video']}",
             "poster": f"assets/{depth_manifest['poster']}",
             "raw": depth_manifest["raw"],
@@ -667,9 +826,18 @@ def build_worldtrack_demo_package(
             "npz": sample["sequence_path"],
             "sequencePath": sample["sequence_path"],
             "trackQuerySource": "frame0_visible_queries",
-            "trackAlignment": {"type": "global_median_scale", "scale": float(scale_global)},
-            "pointAlignment": {"type": "global_median_scale", "scale": float(scale_global)},
-            "predCameraAlignment": {"type": "global_median_scale_translation", "scale": float(scale_global)},
+            "trackAlignment": {
+                "type": "global_median_scale",
+                "scale": float(scale_global),
+            },
+            "pointAlignment": {
+                "type": "global_median_scale",
+                "scale": float(scale_global),
+            },
+            "predCameraAlignment": {
+                "type": "global_median_scale_translation",
+                "scale": float(scale_global),
+            },
             "gtTrackSource": "worldtrack_ref0_world_tracks",
             "predTrackSource": "d4rt_query_tracks_global_aligned",
         },
@@ -706,7 +874,9 @@ def build_worldtrack_demo_package(
             "rgb": package["point_rgb"].astype(np.int32).tolist(),
             "uvPx": _jsonable_float_array(package["point_uv_px"], ndigits=3),
             "confidence": _jsonable_float_array(package["point_confidence"], ndigits=4),
-            "motionScore": _jsonable_float_array(package["point_motion_score"], ndigits=5),
+            "motionScore": _jsonable_float_array(
+                package["point_motion_score"], ndigits=5
+            ),
             "isDynamic": package["point_is_dynamic"].astype(np.int32).tolist(),
         },
         "pointsRaw": {
@@ -718,12 +888,18 @@ def build_worldtrack_demo_package(
         meta["cameraPred"] = {
             "K": _jsonable_float_array(pred_camera_k_seq, ndigits=5),
             "TRef0Cam": _jsonable_float_array(pred_camera_t_ref0_cam, ndigits=6),
-            "validIntrinsics": package["pred_camera_valid_intrinsics"].astype(np.int32).tolist(),
-            "validExtrinsics": package["pred_camera_valid_extrinsics"].astype(np.int32).tolist(),
+            "validIntrinsics": package["pred_camera_valid_intrinsics"]
+            .astype(np.int32)
+            .tolist(),
+            "validExtrinsics": package["pred_camera_valid_extrinsics"]
+            .astype(np.int32)
+            .tolist(),
             "source": "d4rt_queries",
         }
 
-    (assets_dir / "demo_data.json").write_text(json.dumps(data_json, ensure_ascii=False), encoding="utf-8")
+    (assets_dir / "demo_data.json").write_text(
+        json.dumps(data_json, ensure_ascii=False), encoding="utf-8"
+    )
     video_copy_name, poster_name = _export_video_from_frames(
         video_rgb=video_rgb,
         fps=float(fps if fps > 0.0 else 15.0),
@@ -742,11 +918,19 @@ def build_worldtrack_demo_package(
         manifest["depth_pred_poster"] = f"assets/{depth_manifest['poster']}"
         manifest["depth_pred_raw"] = depth_manifest["raw"]
     if track_video_manifest is not None:
-        manifest["tracks_2d_overlay"] = f"assets/{track_video_manifest['tracks_2d_overlay']}"
-        manifest["tracks_2d_overlay_poster"] = f"assets/{track_video_manifest['tracks_2d_overlay_poster']}"
+        manifest["tracks_2d_overlay"] = (
+            f"assets/{track_video_manifest['tracks_2d_overlay']}"
+        )
+        manifest["tracks_2d_overlay_poster"] = (
+            f"assets/{track_video_manifest['tracks_2d_overlay_poster']}"
+        )
         manifest["tracks_3d"] = f"assets/{track_video_manifest['tracks_3d']}"
-        manifest["tracks_3d_poster"] = f"assets/{track_video_manifest['tracks_3d_poster']}"
-    (output_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        manifest["tracks_3d_poster"] = (
+            f"assets/{track_video_manifest['tracks_3d_poster']}"
+        )
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     logger.info("Saved WorldTrack demo package to %s", output_dir)
     return {
         "sample": sample,

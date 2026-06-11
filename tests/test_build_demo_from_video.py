@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import cv2
 import numpy as np
@@ -145,7 +146,7 @@ def test_write_demo_package_emits_viewer_assets(tmp_path: Path) -> None:
     demo._write_demo_package(
         output_dir=output_dir,
         input_path=input_path,
-        package=package,
+        package=cast(demo.DemoPackage, package),
         video_rgb=video_rgb,
         fps=6.0,
     )

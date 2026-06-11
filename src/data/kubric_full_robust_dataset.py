@@ -91,7 +91,9 @@ def _apply_crop_resize_extra(
     return np.stack(out, axis=0)
 
 
-def _decode_depth_u16_to_metric(depth_u16: np.ndarray, depth_range: np.ndarray) -> np.ndarray:
+def _decode_depth_u16_to_metric(
+    depth_u16: np.ndarray, depth_range: np.ndarray
+) -> np.ndarray:
     d = np.asarray(depth_u16, dtype=np.float32)
     lo = float(depth_range[0])
     hi = float(depth_range[1])
@@ -109,9 +111,13 @@ def _decode_world_normals_u16(normal_u16: np.ndarray) -> np.ndarray:
 def _resolve_tfds_dir(root: Path) -> Path:
     if (root / "dataset_info.json").exists():
         return root
-    candidates = sorted([p for p in root.iterdir() if p.is_dir() and (p / "dataset_info.json").exists()])
+    candidates = sorted(
+        [p for p in root.iterdir() if p.is_dir() and (p / "dataset_info.json").exists()]
+    )
     if not candidates:
-        raise FileNotFoundError(f"No TFDS version dir with dataset_info.json under: {root}")
+        raise FileNotFoundError(
+            f"No TFDS version dir with dataset_info.json under: {root}"
+        )
     return candidates[-1]
 
 
@@ -185,12 +191,21 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
 
     REQUIRED_CAMERA_KEYS = {"positions", "quaternions", "field_of_view"}
     REQUIRED_INSTANCE_KEYS = {"bboxes_3d", "positions", "quaternions"}
-    REQUIRED_METADATA_KEYS = {"depth_range", "num_frames", "num_instances", "video_name", "height", "width"}
+    REQUIRED_METADATA_KEYS = {
+        "depth_range",
+        "num_frames",
+        "num_instances",
+        "video_name",
+        "height",
+        "width",
+    }
 
     def __init__(self, config: KubricFullRobustConfig) -> None:
         self.cfg = config
         self.h, self.w = config.image_size
-        self._init_dataset_seeding(namespace="kubric_full_robust", default_seed=20260327)
+        self._init_dataset_seeding(
+            namespace="kubric_full_robust", default_seed=20260327
+        )
         self.augment = config.augment or RawAugmentConfig()
         self.bad_registry = BadSampleRegistry(path=config.bad_sample_registry_path)
         self.max_sample_retries = max(1, int(config.max_sample_retries))
@@ -218,10 +233,15 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
         self.tfds = tfds
         self.tf = tf
         self.builder = tfds.builder_from_directory(str(tfds_dir))
-        split_map = dict(config.tfds_split_map or {"train": "train", "val": "validation", "test": "validation"})
+        split_map = dict(
+            config.tfds_split_map
+            or {"train": "train", "val": "validation", "test": "validation"}
+        )
         tfds_split = split_map.get(str(config.split).lower(), str(config.split))
         if tfds_split not in self.builder.info.splits:
-            raise ValueError(f"TFDS split '{tfds_split}' not found. available={list(self.builder.info.splits.keys())}")
+            raise ValueError(
+                f"TFDS split '{tfds_split}' not found. available={list(self.builder.info.splits.keys())}"
+            )
         self.tfds_split = tfds_split
         self.num_examples = int(self.builder.info.splits[tfds_split].num_examples)
         if self.num_examples <= 0:
@@ -230,7 +250,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
             self.num_examples = min(self.num_examples, int(config.max_scenes))
 
         read_cfg = tfds.ReadConfig(try_autocache=False)
-        ds = self.builder.as_dataset(split=tfds_split, shuffle_files=bool(config.training), read_config=read_cfg)
+        ds = self.builder.as_dataset(
+            split=tfds_split, shuffle_files=bool(config.training), read_config=read_cfg
+        )
         ds = self._with_ignore_errors(ds)
         if config.max_scenes is not None:
             ds = ds.take(int(config.max_scenes))
@@ -249,11 +271,15 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
             self._reset_eval_iter()
 
         try:
-            probe_ds = self._with_ignore_errors(self.builder.as_dataset(split=f"{tfds_split}[:1]"))
+            probe_ds = self._with_ignore_errors(
+                self.builder.as_dataset(split=f"{tfds_split}[:1]")
+            )
             sample_for_schema = next(iter(tfds.as_numpy(probe_ds)))
             self._validate_schema(sample_for_schema)
         except Exception as exc:
-            failed_paths = self._failed_paths_from_exception(exc, default=[str(self.tfds_dir)])
+            failed_paths = self._failed_paths_from_exception(
+                exc, default=[str(self.tfds_dir)]
+            )
             self.bad_registry.mark_bad(
                 dataset="kubric_full_robust",
                 sample_key="kubric_full_robust::__schema_probe__",
@@ -270,13 +296,23 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
     def _reset_train_iter(self) -> None:
         if not self.cfg.training:
             return
-        shuffle_seed = int(self._seed_material(index=0, attempt=0, stream=97).generate_state(1, dtype=np.uint32)[0])
+        shuffle_seed = int(
+            self._seed_material(index=0, attempt=0, stream=97).generate_state(
+                1, dtype=np.uint32
+            )[0]
+        )
         read_cfg = self.tfds.ReadConfig(try_autocache=False)
-        ds = self.builder.as_dataset(split=self.tfds_split, shuffle_files=True, read_config=read_cfg)
+        ds = self.builder.as_dataset(
+            split=self.tfds_split, shuffle_files=True, read_config=read_cfg
+        )
         ds = self._with_ignore_errors(ds)
         if self.cfg.max_scenes is not None:
             ds = ds.take(int(self.cfg.max_scenes))
-        ds = ds.shuffle(max(16, int(self.cfg.shuffle_buffer_size)), seed=shuffle_seed, reshuffle_each_iteration=True).repeat()
+        ds = ds.shuffle(
+            max(16, int(self.cfg.shuffle_buffer_size)),
+            seed=shuffle_seed,
+            reshuffle_each_iteration=True,
+        ).repeat()
         self._train_iter = iter(self.tfds.as_numpy(ds))
 
     def _reset_eval_iter(self) -> None:
@@ -309,7 +345,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
             except Exception:
                 return ds
 
-    def _failed_paths_from_exception(self, exc: Exception, default: list[str] | None = None) -> list[str]:
+    def _failed_paths_from_exception(
+        self, exc: Exception, default: list[str] | None = None
+    ) -> list[str]:
         paths = failed_paths_from_exception(exc)
         if paths:
             return _dedup_str_list(paths)
@@ -341,11 +379,15 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
         inst_keys = set(sample["instances"].keys())
         missing_inst = sorted(self.REQUIRED_INSTANCE_KEYS - inst_keys)
         if missing_inst:
-            raise ValueError(f"Kubric full sample missing instances keys: {missing_inst}")
+            raise ValueError(
+                f"Kubric full sample missing instances keys: {missing_inst}"
+            )
         meta_keys = set(sample["metadata"].keys())
         missing_meta = sorted(self.REQUIRED_METADATA_KEYS - meta_keys)
         if missing_meta:
-            raise ValueError(f"Kubric full sample missing metadata keys: {missing_meta}")
+            raise ValueError(
+                f"Kubric full sample missing metadata keys: {missing_meta}"
+            )
 
     def _validate_runtime_sample(self, sample: dict[str, Any]) -> None:
         try:
@@ -420,7 +462,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
             self._train_iter = iter(self.tfds.as_numpy(ds))
             return next(self._train_iter)
         except Exception as exc:
-            failed_paths = self._failed_paths_from_exception(exc, default=[str(self.tfds_dir)])
+            failed_paths = self._failed_paths_from_exception(
+                exc, default=[str(self.tfds_dir)]
+            )
             raise RetryableSampleError(
                 f"TFDS train iterator failure: {type(exc).__name__}: {exc}",
                 failed_paths=failed_paths,
@@ -438,7 +482,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
             except StopIteration as exc:
                 raise IndexError(f"Eval index out of range: {index}") from exc
             except Exception as exc:
-                failed_paths = self._failed_paths_from_exception(exc, default=[str(self.tfds_dir)])
+                failed_paths = self._failed_paths_from_exception(
+                    exc, default=[str(self.tfds_dir)]
+                )
                 raise RetryableSampleError(
                     f"TFDS eval iterator failure: {type(exc).__name__}: {exc}",
                     failed_paths=failed_paths,
@@ -479,7 +525,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
 
         h0, w0 = int(video.shape[1]), int(video.shape[2])
         depth_range = np.asarray(sample["metadata"]["depth_range"], dtype=np.float32)
-        depth_range_m = _decode_depth_u16_to_metric(depth_u16, depth_range)  # radial distance
+        depth_range_m = _decode_depth_u16_to_metric(
+            depth_u16, depth_range
+        )  # radial distance
 
         cam_pos = np.asarray(sample["camera"]["positions"], dtype=np.float32)[idxs]
         cam_quat = np.asarray(sample["camera"]["quaternions"], dtype=np.float32)[idxs]
@@ -533,7 +581,15 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
         obj_coord: np.ndarray,
         normal_world: np.ndarray,
         k_seq: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ]:
         t, h0, w0, _ = video.shape
         if h0 == self.h and w0 == self.w:
             return (
@@ -552,12 +608,16 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
         out_obj = np.empty((t, self.h, self.w, 3), dtype=np.float32)
         out_normal = np.empty((t, self.h, self.w, 3), dtype=np.float32)
         for i in range(t):
-            out_video[i] = cv2.resize(video[i], (self.w, self.h), interpolation=cv2.INTER_LINEAR)
+            out_video[i] = cv2.resize(
+                video[i], (self.w, self.h), interpolation=cv2.INTER_LINEAR
+            )
             out_depth_z[i] = _resize_nn(depth_z[i], (self.h, self.w))
             out_depth_range[i] = _resize_nn(depth_range_m[i], (self.h, self.w))
             out_seg[i] = _resize_nn(seg[i], (self.h, self.w)).astype(np.int32)
             out_obj[i] = _resize_nn(obj_coord[i], (self.h, self.w)).astype(np.float32)
-            out_normal[i] = _resize_nn(normal_world[i], (self.h, self.w)).astype(np.float32)
+            out_normal[i] = _resize_nn(normal_world[i], (self.h, self.w)).astype(
+                np.float32
+            )
 
         sx = float(self.w) / max(float(w0), 1.0)
         sy = float(self.h) / max(float(h0), 1.0)
@@ -577,7 +637,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
         )
 
     @staticmethod
-    def _project_point(k: np.ndarray, t_cw: np.ndarray, p_world: np.ndarray) -> tuple[float, float, float]:
+    def _project_point(
+        k: np.ndarray, t_cw: np.ndarray, p_world: np.ndarray
+    ) -> tuple[float, float, float]:
         p_h = np.array([p_world[0], p_world[1], p_world[2], 1.0], dtype=np.float32)
         p_cam = (t_cw @ p_h)[:3]
         z = float(p_cam[2])
@@ -601,7 +663,12 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
         seg_id: int,
     ) -> bool:
         h, w = depth_z_hw.shape
-        if not np.isfinite(u) or not np.isfinite(v) or not np.isfinite(z_proj) or z_proj <= 1e-6:
+        if (
+            not np.isfinite(u)
+            or not np.isfinite(v)
+            or not np.isfinite(z_proj)
+            or z_proj <= 1e-6
+        ):
             return True
         x = float(u)
         y = float(v)
@@ -655,7 +722,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
                 bbox = np.asarray(bboxes_3d_ot83[oi, ti], dtype=np.float32)  # [8,3]
                 if bbox.shape != (8, 3) or not np.isfinite(bbox).all():
                     continue
-                bbox_h = np.concatenate([bbox, np.ones((8, 1), dtype=np.float32)], axis=-1)  # [8,4]
+                bbox_h = np.concatenate(
+                    [bbox, np.ones((8, 1), dtype=np.float32)], axis=-1
+                )  # [8,4]
                 try:
                     m, *_ = np.linalg.lstsq(local_box, bbox_h, rcond=None)
                 except np.linalg.LinAlgError:
@@ -664,7 +733,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
         return out
 
     @staticmethod
-    def _sample_rows(pool: np.ndarray, count: int, rng: np.random.Generator) -> np.ndarray:
+    def _sample_rows(
+        pool: np.ndarray, count: int, rng: np.random.Generator
+    ) -> np.ndarray:
         if count <= 0 or pool.shape[0] <= 0:
             return np.zeros((0, 2), dtype=np.int64)
         if pool.shape[0] <= count:
@@ -690,7 +761,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
         if t_clip <= 0 or h <= 0 or w <= 0 or max_queries == 0:
             return None
 
-        cam_valid = np.isfinite(t_wc_seq).all(axis=(1, 2)) & np.isfinite(k_seq).all(axis=(1, 2))
+        cam_valid = np.isfinite(t_wc_seq).all(axis=(1, 2)) & np.isfinite(k_seq).all(
+            axis=(1, 2)
+        )
         t_cw_seq = np.full((t_clip, 4, 4), np.nan, dtype=np.float32)
         for ti in range(t_clip):
             if not bool(cam_valid[ti]):
@@ -729,7 +802,11 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
             if chosen_count < quota:
                 all_pool = np.argwhere(valid)
                 chosen.append(self._sample_rows(all_pool, quota - chosen_count, rng))
-            picks = np.concatenate([arr for arr in chosen if arr.shape[0] > 0], axis=0) if chosen else np.zeros((0, 2), dtype=np.int64)
+            picks = (
+                np.concatenate([arr for arr in chosen if arr.shape[0] > 0], axis=0)
+                if chosen
+                else np.zeros((0, 2), dtype=np.int64)
+            )
             if picks.shape[0] == 0:
                 continue
 
@@ -748,7 +825,13 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
                 p_world_seq = np.full((t_clip, 3), np.nan, dtype=np.float32)
                 if seg_id > 0 and (seg_id - 1) < num_obj:
                     obj_idx = seg_id - 1
-                    local = np.concatenate([obj_coord_local[fs, v_src, u_src], np.array([1.0], dtype=np.float32)], axis=0)
+                    local = np.concatenate(
+                        [
+                            obj_coord_local[fs, v_src, u_src],
+                            np.array([1.0], dtype=np.float32),
+                        ],
+                        axis=0,
+                    )
                     for ti in range(t_clip):
                         m_tgt = obj_l2w[obj_idx, ti]
                         if not np.isfinite(m_tgt).all():
@@ -774,13 +857,26 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
                 track_local = np.full((t_clip, 3), np.nan, dtype=np.float32)
                 vis = np.zeros((t_clip,), dtype=np.bool_)
                 for ti in range(t_clip):
-                    if not bool(cam_valid[ti]) or not np.isfinite(p_world_seq[ti]).all():
+                    if (
+                        not bool(cam_valid[ti])
+                        or not np.isfinite(p_world_seq[ti]).all()
+                    ):
                         continue
-                    p_h = np.array([p_world_seq[ti, 0], p_world_seq[ti, 1], p_world_seq[ti, 2], 1.0], dtype=np.float32)
+                    p_h = np.array(
+                        [
+                            p_world_seq[ti, 0],
+                            p_world_seq[ti, 1],
+                            p_world_seq[ti, 2],
+                            1.0,
+                        ],
+                        dtype=np.float32,
+                    )
                     p_cam = (t_cw_seq[ti] @ p_h)[:3]
                     if np.isfinite(p_cam).all():
                         track_local[ti] = p_cam.astype(np.float32)
-                    u_tgt, v_tgt, z_tgt = self._project_point(k_seq[ti], t_cw_seq[ti], p_world_seq[ti])
+                    u_tgt, v_tgt, z_tgt = self._project_point(
+                        k_seq[ti], t_cw_seq[ti], p_world_seq[ti]
+                    )
                     in_img = (
                         np.isfinite(u_tgt)
                         and np.isfinite(v_tgt)
@@ -803,7 +899,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
 
                 if not bool(vis[fs]):
                     continue
-                query_points.append(np.array([float(u_src), float(v_src), float(fs)], dtype=np.float32))
+                query_points.append(
+                    np.array([float(u_src), float(v_src), float(fs)], dtype=np.float32)
+                )
                 tracks_xyz.append(track_local.astype(np.float32))
                 visibility.append(vis.astype(np.bool_))
 
@@ -861,7 +959,12 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
         k_seq: np.ndarray,
         t_wc_seq: np.ndarray,
         bboxes_3d_ot83: np.ndarray,
-    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
+    ) -> tuple[
+        dict[str, np.ndarray],
+        dict[str, np.ndarray],
+        dict[str, np.ndarray],
+        dict[str, np.ndarray],
+    ]:
         del video_t_chw
         t_clip, h, w = depth_z.shape
         m = int(self.cfg.queries_per_clip)
@@ -876,7 +979,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
             t_src_tgt_delta_choices=self.cfg.t_src_tgt_delta_choices,
             t_src_tgt_delta_probs=self.cfg.t_src_tgt_delta_probs,
         )
-        use_hard = sample_hard_query_flags(self.rng, m, float(self.cfg.hard_query_ratio))
+        use_hard = sample_hard_query_flags(
+            self.rng, m, float(self.cfg.hard_query_ratio)
+        )
 
         q_u = np.zeros((m,), dtype=np.float32)
         q_v = np.zeros((m,), dtype=np.float32)
@@ -894,7 +999,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
         is_hard_query = np.zeros((m,), dtype=np.bool_)
 
         t_cw_seq = np.full((t_clip, 4, 4), np.nan, dtype=np.float32)
-        cam_valid = np.isfinite(t_wc_seq).all(axis=(1, 2)) & np.isfinite(k_seq).all(axis=(1, 2))
+        cam_valid = np.isfinite(t_wc_seq).all(axis=(1, 2)) & np.isfinite(k_seq).all(
+            axis=(1, 2)
+        )
         for i in range(t_clip):
             if not bool(cam_valid[i]):
                 continue
@@ -923,10 +1030,16 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
             fs = int(q_t_src[i])
             ft = int(q_t_tgt[i])
             fc = int(q_t_cam[i])
-            if not (bool(cam_valid[fs]) and bool(cam_valid[ft]) and bool(cam_valid[fc])):
+            if not (
+                bool(cam_valid[fs]) and bool(cam_valid[ft]) and bool(cam_valid[fc])
+            ):
                 continue
 
-            pool = hard_pix[fs] if bool(use_hard[i]) and hard_pix[fs].shape[0] > 0 else easy_pix[fs]
+            pool = (
+                hard_pix[fs]
+                if bool(use_hard[i]) and hard_pix[fs].shape[0] > 0
+                else easy_pix[fs]
+            )
             if pool.shape[0] == 0:
                 continue
             is_hard_query[i] = bool(use_hard[i]) and hard_pix[fs].shape[0] > 0
@@ -944,13 +1057,22 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
 
                 if seg_id > 0 and (seg_id - 1) < num_obj:
                     obj_idx = seg_id - 1
-                    local = np.concatenate([obj_coord_local[fs, v_src, u_src], np.array([1.0], dtype=np.float32)], axis=0)
+                    local = np.concatenate(
+                        [
+                            obj_coord_local[fs, v_src, u_src],
+                            np.array([1.0], dtype=np.float32),
+                        ],
+                        axis=0,
+                    )
                     m_src = obj_l2w[obj_idx, fs]
                     m_tgt = obj_l2w[obj_idx, ft]
                     if np.isfinite(m_src).all() and np.isfinite(m_tgt).all():
                         w_src_h = local @ m_src
                         w_tgt_h = local @ m_tgt
-                        if abs(float(w_src_h[3])) > 1e-6 and abs(float(w_tgt_h[3])) > 1e-6:
+                        if (
+                            abs(float(w_src_h[3])) > 1e-6
+                            and abs(float(w_tgt_h[3])) > 1e-6
+                        ):
                             p_world_src = (w_src_h[:3] / w_src_h[3]).astype(np.float32)
                             p_world_tgt = (w_tgt_h[:3] / w_tgt_h[3]).astype(np.float32)
 
@@ -958,19 +1080,28 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
                     # Background (or fallback): one-shot unprojection with radial depth.
                     d = float(depth_range_m[fs, v_src, u_src])
                     p_world_src = self._unproject_background_world(
-                        u=u_src, v=v_src, depth_range_value=d, k=k_seq[fs], t_wc=t_wc_seq[fs]
+                        u=u_src,
+                        v=v_src,
+                        depth_range_value=d,
+                        k=k_seq[fs],
+                        t_wc=t_wc_seq[fs],
                     )
                     p_world_tgt = p_world_src.copy()
                     seg_id = 0
 
-                if not (np.isfinite(p_world_src).all() and np.isfinite(p_world_tgt).all()):
+                if not (
+                    np.isfinite(p_world_src).all() and np.isfinite(p_world_tgt).all()
+                ):
                     continue
 
                 q_u[i] = float(u_src) / w_norm
                 q_v[i] = float(v_src) / h_norm
 
                 # xyz_3d in t_cam frame
-                p_tgt_h = np.array([p_world_tgt[0], p_world_tgt[1], p_world_tgt[2], 1.0], dtype=np.float32)
+                p_tgt_h = np.array(
+                    [p_world_tgt[0], p_world_tgt[1], p_world_tgt[2], 1.0],
+                    dtype=np.float32,
+                )
                 xyz_cam = (t_cw_seq[fc] @ p_tgt_h)[:3]
                 if not np.isfinite(xyz_cam).all():
                     continue
@@ -985,7 +1116,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
                     m_disp[i] = True
 
                 # target uv + visibility
-                u_tgt, v_tgt, z_tgt = self._project_point(k_seq[ft], t_cw_seq[ft], p_world_tgt)
+                u_tgt, v_tgt, z_tgt = self._project_point(
+                    k_seq[ft], t_cw_seq[ft], p_world_tgt
+                )
                 in_img = (
                     np.isfinite(u_tgt)
                     and np.isfinite(v_tgt)
@@ -1030,13 +1163,33 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
             if not solved:
                 continue
 
-        query = {"u": q_u, "v": q_v, "t_src": q_t_src, "t_tgt": q_t_tgt, "t_cam": q_t_cam}
+        query = {
+            "u": q_u,
+            "v": q_v,
+            "t_src": q_t_src,
+            "t_tgt": q_t_tgt,
+            "t_cam": q_t_cam,
+        }
         query_stats = {"is_hard_query": is_hard_query}
-        target = {"xyz_3d": y_xyz, "uv_2d": y_uv, "visibility": y_vis, "displacement": y_disp, "normal": y_normal}
-        mask = {"xyz_3d": m_xyz, "uv_2d": m_uv, "visibility": m_vis, "displacement": m_disp, "normal": m_normal}
+        target = {
+            "xyz_3d": y_xyz,
+            "uv_2d": y_uv,
+            "visibility": y_vis,
+            "displacement": y_disp,
+            "normal": y_normal,
+        }
+        mask = {
+            "xyz_3d": m_xyz,
+            "uv_2d": m_uv,
+            "visibility": m_vis,
+            "displacement": m_disp,
+            "normal": m_normal,
+        }
         return query, target, mask, query_stats
 
-    def _build_sample(self, sample: dict[str, Any], idxs: list[int], clip_start: int) -> dict[str, Any]:
+    def _build_sample(
+        self, sample: dict[str, Any], idxs: list[int], clip_start: int
+    ) -> dict[str, Any]:
         (
             video,
             depth_z,
@@ -1066,41 +1219,70 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
             k_seq=k_seq,
         )
         depth_valid = np.isfinite(depth_z) & (depth_z > 0.0)
-        t_clip = len(idxs)
-        cam_valid = np.isfinite(t_wc_seq).all(axis=(1, 2)) & np.isfinite(k_seq).all(axis=(1, 2))
+        cam_valid = np.isfinite(t_wc_seq).all(axis=(1, 2)) & np.isfinite(k_seq).all(
+            axis=(1, 2)
+        )
 
         video_t_chw = np.transpose(video, (0, 3, 1, 2)).astype(np.float32)
         src_h = int(np.asarray(sample["metadata"]["height"]).item())
         src_w = int(np.asarray(sample["metadata"]["width"]).item())
-        aspect_ratio = np.array([float(src_w) / max(float(src_h), 1.0)], dtype=np.float32)
+        aspect_ratio = np.array(
+            [float(src_w) / max(float(src_h), 1.0)], dtype=np.float32
+        )
 
         _crop_info: dict[str, Any] = {}
         if self.cfg.training:
-            video_t_chw = apply_photometric_augment(video_t_chw=video_t_chw, rng=self.rng, cfg=self.augment)
-            (video_t_chw, depth_z, depth_valid, k_seq, aspect_ratio) = apply_spatial_crop_images_only(
-                video_t_chw=video_t_chw,
-                depth_t_hw=depth_z,
-                depth_valid_t_hw=depth_valid,
-                k_t_33=k_seq,
-                camera_valid_t=cam_valid,
-                rng=self.rng,
-                cfg=self.augment,
-                native_aspect_ratio=aspect_ratio,
-                out_info=_crop_info,
+            video_t_chw = apply_photometric_augment(
+                video_t_chw=video_t_chw, rng=self.rng, cfg=self.augment
             )
-            if "crop_hw" in _crop_info and "crop_xy" in _crop_info and "image_hw" in _crop_info:
+            (video_t_chw, depth_z, depth_valid, k_seq, aspect_ratio) = (
+                apply_spatial_crop_images_only(
+                    video_t_chw=video_t_chw,
+                    depth_t_hw=depth_z,
+                    depth_valid_t_hw=depth_valid,
+                    k_t_33=k_seq,
+                    camera_valid_t=cam_valid,
+                    rng=self.rng,
+                    cfg=self.augment,
+                    native_aspect_ratio=aspect_ratio,
+                    out_info=_crop_info,
+                )
+            )
+            if (
+                "crop_hw" in _crop_info
+                and "crop_xy" in _crop_info
+                and "image_hw" in _crop_info
+            ):
                 crop_hw = tuple(_crop_info["crop_hw"])
                 crop_xy = tuple(_crop_info["crop_xy"])
                 image_hw = tuple(_crop_info["image_hw"])
-                seg = _apply_crop_resize_extra(seg, crop_xy=crop_xy, crop_hw=crop_hw, out_hw=image_hw, interp=cv2.INTER_NEAREST)
+                seg = _apply_crop_resize_extra(
+                    seg,
+                    crop_xy=crop_xy,
+                    crop_hw=crop_hw,
+                    out_hw=image_hw,
+                    interp=cv2.INTER_NEAREST,
+                )
                 obj_coord_local = _apply_crop_resize_extra(
-                    obj_coord_local, crop_xy=crop_xy, crop_hw=crop_hw, out_hw=image_hw, interp=cv2.INTER_NEAREST
+                    obj_coord_local,
+                    crop_xy=crop_xy,
+                    crop_hw=crop_hw,
+                    out_hw=image_hw,
+                    interp=cv2.INTER_NEAREST,
                 )
                 normal_world = _apply_crop_resize_extra(
-                    normal_world, crop_xy=crop_xy, crop_hw=crop_hw, out_hw=image_hw, interp=cv2.INTER_NEAREST
+                    normal_world,
+                    crop_xy=crop_xy,
+                    crop_hw=crop_hw,
+                    out_hw=image_hw,
+                    interp=cv2.INTER_NEAREST,
                 )
                 depth_range_m = _apply_crop_resize_extra(
-                    depth_range_m, crop_xy=crop_xy, crop_hw=crop_hw, out_hw=image_hw, interp=cv2.INTER_NEAREST
+                    depth_range_m,
+                    crop_xy=crop_xy,
+                    crop_hw=crop_hw,
+                    out_hw=image_hw,
+                    interp=cv2.INTER_NEAREST,
                 )
                 seg = seg.astype(np.int32)
                 obj_coord_local = obj_coord_local.astype(np.float32)
@@ -1108,7 +1290,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
                 depth_range_m = depth_range_m.astype(np.float32)
 
         instances = sample["instances"]
-        bboxes_all = np.asarray(instances["bboxes_3d"], dtype=np.float32)  # [N_obj,T_all,8,3]
+        bboxes_all = np.asarray(
+            instances["bboxes_3d"], dtype=np.float32
+        )  # [N_obj,T_all,8,3]
         bboxes_clip = bboxes_all[:, idxs]
 
         query, target, mask, query_stats = self._build_queries(
@@ -1145,7 +1329,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
             )
             if benchmark_tracking is not None:
                 benchmark_payload["benchmark_tracking"] = {
-                    key: torch.from_numpy(value) if isinstance(value, np.ndarray) else value
+                    key: torch.from_numpy(value)
+                    if isinstance(value, np.ndarray)
+                    else value
                     for key, value in benchmark_tracking.items()
                 }
 
@@ -1155,8 +1341,15 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
             "aspect_ratio": torch.from_numpy(aspect_ratio.astype(np.float32)),
             "depth_m": torch.from_numpy(depth_z.astype(np.float32)).float(),
             "depth_valid": torch.from_numpy(depth_valid).bool(),
-            "query": {k: torch.from_numpy(v).to(torch.long if k.startswith("t_") else torch.float32) for k, v in query.items()},
-            "query_stats": {k: torch.from_numpy(v).bool() for k, v in query_stats.items()},
+            "query": {
+                k: torch.from_numpy(v).to(
+                    torch.long if k.startswith("t_") else torch.float32
+                )
+                for k, v in query.items()
+            },
+            "query_stats": {
+                k: torch.from_numpy(v).bool() for k, v in query_stats.items()
+            },
             "target": {k: torch.from_numpy(v).float() for k, v in target.items()},
             "mask": {k: torch.from_numpy(v).bool() for k, v in mask.items()},
             "camera": {
@@ -1164,7 +1357,12 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
                 "T_wc": torch.from_numpy(t_wc_seq).float(),
                 "camera_valid": torch.from_numpy(cam_valid).bool(),
             },
-            "augment_info": {k: torch.from_numpy(v) for k, v in build_augment_info(_crop_info, image_hw=(self.h, self.w)).items()},
+            "augment_info": {
+                k: torch.from_numpy(v)
+                for k, v in build_augment_info(
+                    _crop_info, image_hw=(self.h, self.w)
+                ).items()
+            },
             "meta": {
                 "dataset": "kubric_full_robust",
                 "scene_id": video_name,
@@ -1178,7 +1376,9 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
         last_error: Exception | None = None
         total = max(1, len(self))
         for attempt in range(self.max_sample_retries):
-            query_index, _ = self._prepare_sample_rng(index=index, total=total, attempt=attempt)
+            query_index, _ = self._prepare_sample_rng(
+                index=index, total=total, attempt=attempt
+            )
             sample_key = ""
             sample_paths = [str(self.tfds_dir)]
             try:
@@ -1200,11 +1400,15 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
                 sample_key = f"kubric_full_robust::{video_name}::frames={','.join(str(int(v)) for v in idxs)}"
                 if self.bad_registry.is_bad_sample(sample_key):
                     continue
-                out = self._build_sample(sample=sample, idxs=idxs, clip_start=clip_start)
+                out = self._build_sample(
+                    sample=sample, idxs=idxs, clip_start=clip_start
+                )
                 out["meta"]["sample_key"] = sample_key
                 return out
             except Exception as exc:
-                failed_paths = self._failed_paths_from_exception(exc, default=[str(self.tfds_dir)])
+                failed_paths = self._failed_paths_from_exception(
+                    exc, default=[str(self.tfds_dir)]
+                )
                 if not is_retryable_data_error(exc):
                     retry_exc = RetryableSampleError(
                         f"Converted non-retryable sample failure: {type(exc).__name__}: {exc}",
@@ -1213,13 +1417,15 @@ class KubricFullRobustDataset(SeededDatasetMixin, Dataset):
                     last_error = retry_exc
                     self.bad_registry.mark_bad(
                         dataset="kubric_full_robust",
-                        sample_key=sample_key or f"kubric_full_robust::index={query_index}",
+                        sample_key=sample_key
+                        or f"kubric_full_robust::index={query_index}",
                         sample_paths=_dedup_str_list(sample_paths + failed_paths),
                         failed_paths=failed_paths,
                         error=f"{type(exc).__name__}: {exc}",
                     )
                     self._warn_skip(
-                        sample_key=sample_key or f"kubric_full_robust::index={query_index}",
+                        sample_key=sample_key
+                        or f"kubric_full_robust::index={query_index}",
                         reason=f"{type(exc).__name__}: {exc}",
                         failed_paths=failed_paths,
                     )

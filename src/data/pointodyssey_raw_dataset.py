@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 import torch
 from PIL import Image
@@ -18,7 +17,10 @@ from .bad_sample_registry import (
     failed_paths_from_exception,
     is_retryable_data_error,
 )
-from .depth_query_builder import build_queries_from_depth, build_queries_from_trajectories
+from .depth_query_builder import (
+    build_queries_from_depth,
+    build_queries_from_trajectories,
+)
 from .raw_augment import (
     RawAugmentConfig,
     apply_photometric_augment,
@@ -31,23 +33,35 @@ from .seeding import SeededDatasetMixin
 
 def _read_rgb(path: Path, width: int, height: int) -> np.ndarray:
     try:
-        img = Image.open(path).convert("RGB").resize((width, height), resample=Image.Resampling.BILINEAR)
+        img = (
+            Image.open(path)
+            .convert("RGB")
+            .resize((width, height), resample=Image.Resampling.BILINEAR)
+        )
         return np.asarray(img, dtype=np.uint8)
     except Exception as exc:
-        raise RetryableSampleError(f"Failed to read RGB image: {path}: {exc}", failed_paths=[str(path)]) from exc
+        raise RetryableSampleError(
+            f"Failed to read RGB image: {path}: {exc}", failed_paths=[str(path)]
+        ) from exc
 
 
 def _read_depth(path: Path, width: int, height: int) -> np.ndarray:
     try:
         dep = np.asarray(Image.open(path), dtype=np.uint16)
-        dep_img = Image.fromarray(dep, mode="I;16").resize((width, height), resample=Image.Resampling.NEAREST)
+        dep_img = Image.fromarray(dep, mode="I;16").resize(
+            (width, height), resample=Image.Resampling.NEAREST
+        )
         return np.asarray(dep_img, dtype=np.uint16)
     except Exception as exc:
-        raise RetryableSampleError(f"Failed to read depth image: {path}: {exc}", failed_paths=[str(path)]) from exc
+        raise RetryableSampleError(
+            f"Failed to read depth image: {path}: {exc}", failed_paths=[str(path)]
+        ) from exc
 
 
 def _world_to_cam(x_world: np.ndarray, t_cw: np.ndarray) -> np.ndarray:
-    x_h = np.concatenate([x_world.astype(np.float32), np.array([1.0], dtype=np.float32)], axis=0)
+    x_h = np.concatenate(
+        [x_world.astype(np.float32), np.array([1.0], dtype=np.float32)], axis=0
+    )
     x_cam = t_cw @ x_h
     return x_cam[:3]
 
@@ -148,7 +162,9 @@ class PointOdysseyRawDataset(SeededDatasetMixin, Dataset):
                     src_w=int(src_w),
                 )
             )
-            if config.max_scenes is not None and len(self.scenes) >= int(config.max_scenes):
+            if config.max_scenes is not None and len(self.scenes) >= int(
+                config.max_scenes
+            ):
                 break
 
         if not self.scenes:
@@ -177,16 +193,34 @@ class PointOdysseyRawDataset(SeededDatasetMixin, Dataset):
         try:
             anno = np.load(anno_path, allow_pickle=True)
         except Exception as exc:
-            raise RetryableSampleError(f"Failed to read PointOdyssey anno: {anno_path}: {exc}", failed_paths=[str(anno_path)]) from exc
+            raise RetryableSampleError(
+                f"Failed to read PointOdyssey anno: {anno_path}: {exc}",
+                failed_paths=[str(anno_path)],
+            ) from exc
 
-        traj_2d = np.asarray(anno.get("trajs_2d", np.empty((0, 0, 2), dtype=np.float32)), dtype=np.float32)
-        valids = np.asarray(anno.get("valids", np.empty((0, 0), dtype=np.bool_))).astype(np.bool_)
-        visibs = np.asarray(anno.get("visibs", np.empty((0, 0), dtype=np.bool_))).astype(np.bool_)
-        intr = np.asarray(anno.get("intrinsics", np.empty((0, 3, 3), dtype=np.float32)), dtype=np.float32)
-        extr = np.asarray(anno.get("extrinsics", np.empty((0, 4, 4), dtype=np.float32)), dtype=np.float32)
+        traj_2d = np.asarray(
+            anno.get("trajs_2d", np.empty((0, 0, 2), dtype=np.float32)),
+            dtype=np.float32,
+        )
+        valids = np.asarray(
+            anno.get("valids", np.empty((0, 0), dtype=np.bool_))
+        ).astype(np.bool_)
+        visibs = np.asarray(
+            anno.get("visibs", np.empty((0, 0), dtype=np.bool_))
+        ).astype(np.bool_)
+        intr = np.asarray(
+            anno.get("intrinsics", np.empty((0, 3, 3), dtype=np.float32)),
+            dtype=np.float32,
+        )
+        extr = np.asarray(
+            anno.get("extrinsics", np.empty((0, 4, 4), dtype=np.float32)),
+            dtype=np.float32,
+        )
         traj_3d_raw = anno.get("trajs_3d")
         traj_3d_fallback_reason: str | None = None
-        traj_3d = None if traj_3d_raw is None else np.asarray(traj_3d_raw, dtype=np.float32)
+        traj_3d = (
+            None if traj_3d_raw is None else np.asarray(traj_3d_raw, dtype=np.float32)
+        )
         if traj_3d_raw is None:
             traj_3d_fallback_reason = "anno.npz is missing key 'trajs_3d'"
         elif _is_nan_scalar_placeholder(traj_3d):
@@ -197,18 +231,34 @@ class PointOdysseyRawDataset(SeededDatasetMixin, Dataset):
             )
 
         if traj_2d.ndim != 3 or traj_2d.shape[-1] != 2:
-            raise RetryableSampleError(f"Invalid PointOdyssey trajs_2d shape: {traj_2d.shape}", failed_paths=[str(anno_path)])
+            raise RetryableSampleError(
+                f"Invalid PointOdyssey trajs_2d shape: {traj_2d.shape}",
+                failed_paths=[str(anno_path)],
+            )
         if valids.shape != traj_2d.shape[:2] or visibs.shape != traj_2d.shape[:2]:
             raise RetryableSampleError(
                 f"Invalid PointOdyssey valids/visibs shape: {valids.shape}, {visibs.shape} vs {traj_2d.shape[:2]}",
                 failed_paths=[str(anno_path)],
             )
         if intr.ndim != 3 or intr.shape[1:] != (3, 3):
-            raise RetryableSampleError(f"Invalid PointOdyssey intrinsics shape: {intr.shape}", failed_paths=[str(anno_path)])
+            raise RetryableSampleError(
+                f"Invalid PointOdyssey intrinsics shape: {intr.shape}",
+                failed_paths=[str(anno_path)],
+            )
         if extr.ndim != 3 or extr.shape[1:] != (4, 4):
-            raise RetryableSampleError(f"Invalid PointOdyssey extrinsics shape: {extr.shape}", failed_paths=[str(anno_path)])
+            raise RetryableSampleError(
+                f"Invalid PointOdyssey extrinsics shape: {extr.shape}",
+                failed_paths=[str(anno_path)],
+            )
 
-        n_frames = min(scene.frame_count, traj_2d.shape[0], valids.shape[0], visibs.shape[0], intr.shape[0], extr.shape[0])
+        n_frames = min(
+            scene.frame_count,
+            traj_2d.shape[0],
+            valids.shape[0],
+            visibs.shape[0],
+            intr.shape[0],
+            extr.shape[0],
+        )
         n_points = int(traj_2d.shape[1])
         if traj_3d is not None and traj_3d.ndim == 3 and traj_3d.shape[-1] == 3:
             n_frames = min(n_frames, traj_3d.shape[0])
@@ -282,8 +332,12 @@ class PointOdysseyRawDataset(SeededDatasetMixin, Dataset):
 
     def _frame_indices(self, scene_len: int, index: int) -> list[int]:
         return sample_frame_indices_with_stride(
-            rng=self.rng, scene_len=scene_len, clip_frames=int(self.cfg.clip_frames),
-            cfg=self.augment, training=bool(self.cfg.training), index=index,
+            rng=self.rng,
+            scene_len=scene_len,
+            clip_frames=int(self.cfg.clip_frames),
+            cfg=self.augment,
+            training=bool(self.cfg.training),
+            index=index,
         )
 
     def _sample_key(self, scene: _Scene, idxs: list[int]) -> str:
@@ -297,11 +351,15 @@ class PointOdysseyRawDataset(SeededDatasetMixin, Dataset):
             out.append(str(scene.depth_paths[i]))
         return out
 
-    def _build_sample(self, scene: _Scene, cache: _SceneCache, idxs: list[int], clip_start: int) -> dict[str, Any]:
+    def _build_sample(
+        self, scene: _Scene, cache: _SceneCache, idxs: list[int], clip_start: int
+    ) -> dict[str, Any]:
         video_list: list[np.ndarray] = []
         depth_list: list[np.ndarray] = []
         for i in idxs:
-            video_list.append(_read_rgb(scene.rgb_paths[i], width=self.w, height=self.h))
+            video_list.append(
+                _read_rgb(scene.rgb_paths[i], width=self.w, height=self.h)
+            )
             dep_u16 = _read_depth(scene.depth_paths[i], width=self.w, height=self.h)
             depth_list.append(dep_u16.astype(np.float32) / 65535.0 * 1000.0)
 
@@ -318,31 +376,39 @@ class PointOdysseyRawDataset(SeededDatasetMixin, Dataset):
         k_arr[:, 0, 2] *= sx
         k_arr[:, 1, 1] *= sy
         k_arr[:, 1, 2] *= sy
-        cam_valid = np.isfinite(k_arr).all(axis=(1, 2)) & np.isfinite(t_wc_arr).all(axis=(1, 2))
+        cam_valid = np.isfinite(k_arr).all(axis=(1, 2)) & np.isfinite(t_wc_arr).all(
+            axis=(1, 2)
+        )
 
-        aspect_ratio = np.array([scene.src_w / max(float(scene.src_h), 1.0)], dtype=np.float32)
+        aspect_ratio = np.array(
+            [scene.src_w / max(float(scene.src_h), 1.0)], dtype=np.float32
+        )
         _crop_info = {}
         if self.cfg.training:
-            video = apply_photometric_augment(video_t_chw=video, rng=self.rng, cfg=self.augment)
-            (video, depth, depth_valid, k_arr, aspect_ratio) = apply_spatial_crop_images_only(
-                video_t_chw=video,
-                depth_t_hw=depth,
-                depth_valid_t_hw=depth_valid,
-                k_t_33=k_arr,
-                camera_valid_t=cam_valid,
-                rng=self.rng,
-                cfg=self.augment,
-                native_aspect_ratio=aspect_ratio,
-                out_info=_crop_info,
+            video = apply_photometric_augment(
+                video_t_chw=video, rng=self.rng, cfg=self.augment
+            )
+            (video, depth, depth_valid, k_arr, aspect_ratio) = (
+                apply_spatial_crop_images_only(
+                    video_t_chw=video,
+                    depth_t_hw=depth,
+                    depth_valid_t_hw=depth_valid,
+                    k_t_33=k_arr,
+                    camera_valid_t=cam_valid,
+                    rng=self.rng,
+                    cfg=self.augment,
+                    native_aspect_ratio=aspect_ratio,
+                    out_info=_crop_info,
+                )
             )
 
         # Use GT trajectories for query building when available (dynamic scenes).
         # Scenes whose trajs_3d is a NaN placeholder are blacklisted earlier in _load_scene_cache.
         # Remaining non-trajectory cases still fall back to depth reprojection.
         if cache.traj_3d_tn3 is not None:
-            traj_3d = cache.traj_3d_tn3[idxs]       # [T_clip, N, 3]
-            traj_vis = cache.visibs_tn[idxs]         # [T_clip, N]
-            traj_val = cache.valids_tn[idxs]         # [T_clip, N]
+            traj_3d = cache.traj_3d_tn3[idxs]  # [T_clip, N, 3]
+            traj_vis = cache.visibs_tn[idxs]  # [T_clip, N]
+            traj_val = cache.valids_tn[idxs]  # [T_clip, N]
             query, target, mask, query_stats = build_queries_from_trajectories(
                 rng=self.rng,
                 traj_3d_world=traj_3d,
@@ -379,8 +445,15 @@ class PointOdysseyRawDataset(SeededDatasetMixin, Dataset):
             "aspect_ratio": torch.from_numpy(aspect_ratio.astype(np.float32)),
             "depth_m": torch.from_numpy(depth).float(),
             "depth_valid": torch.from_numpy(depth_valid).bool(),
-            "query": {k: torch.from_numpy(v).to(torch.long if k.startswith("t_") else torch.float32) for k, v in query.items()},
-            "query_stats": {k: torch.from_numpy(v).bool() for k, v in query_stats.items()},
+            "query": {
+                k: torch.from_numpy(v).to(
+                    torch.long if k.startswith("t_") else torch.float32
+                )
+                for k, v in query.items()
+            },
+            "query_stats": {
+                k: torch.from_numpy(v).bool() for k, v in query_stats.items()
+            },
             "target": {k: torch.from_numpy(v).float() for k, v in target.items()},
             "mask": {k: torch.from_numpy(v).bool() for k, v in mask.items()},
             "camera": {
@@ -388,7 +461,12 @@ class PointOdysseyRawDataset(SeededDatasetMixin, Dataset):
                 "T_wc": torch.from_numpy(t_wc_arr).float(),
                 "camera_valid": torch.from_numpy(cam_valid).bool(),
             },
-            "augment_info": {k: torch.from_numpy(v) for k, v in build_augment_info(_crop_info, image_hw=(self.h, self.w)).items()},
+            "augment_info": {
+                k: torch.from_numpy(v)
+                for k, v in build_augment_info(
+                    _crop_info, image_hw=(self.h, self.w)
+                ).items()
+            },
             "meta": {
                 "dataset": "pointodyssey_raw",
                 "scene_id": scene.name,
@@ -403,9 +481,13 @@ class PointOdysseyRawDataset(SeededDatasetMixin, Dataset):
         total = max(1, len(self))
 
         for attempt in range(self.max_sample_retries):
-            query_index, _ = self._prepare_sample_rng(index=index, total=total, attempt=attempt)
+            query_index, _ = self._prepare_sample_rng(
+                index=index, total=total, attempt=attempt
+            )
             scene = self._scene(query_index)
-            frame_index = query_index if self.cfg.training else self._eval_clip_slot(query_index)
+            frame_index = (
+                query_index if self.cfg.training else self._eval_clip_slot(query_index)
+            )
             idxs = self._frame_indices(scene.frame_count, frame_index)
             clip_start = int(idxs[0]) if idxs else 0
             sample_key = self._sample_key(scene, idxs)
@@ -419,10 +501,15 @@ class PointOdysseyRawDataset(SeededDatasetMixin, Dataset):
             try:
                 cache = self._load_scene_cache(scene)
                 if cache.frame_count < self.cfg.clip_frames:
-                    raise RetryableSampleError(f"PointOdyssey scene too short: {scene.name}", failed_paths=[str(scene.path)])
+                    raise RetryableSampleError(
+                        f"PointOdyssey scene too short: {scene.name}",
+                        failed_paths=[str(scene.path)],
+                    )
                 idxs = self._frame_indices(cache.frame_count, frame_index)
                 clip_start = int(idxs[0]) if idxs else 0
-                sample = self._build_sample(scene=scene, cache=cache, idxs=idxs, clip_start=clip_start)
+                sample = self._build_sample(
+                    scene=scene, cache=cache, idxs=idxs, clip_start=clip_start
+                )
             except Exception as exc:
                 if not is_retryable_data_error(exc):
                     raise

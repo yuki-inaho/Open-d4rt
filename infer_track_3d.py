@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import cv2
-import imageio.v2 as imageio
 import numpy as np
 import torch
 
-from src.eval.tasks import _encode_model_memory, _model_clip_frames, _run_model_for_queries, _umeyama_sim3
+from src.eval.tasks import (
+    _encode_model_memory,
+    _model_clip_frames,
+    _run_model_for_queries,
+    _umeyama_sim3,
+)
 
 
 def _resolve_device(raw: str) -> torch.device:
@@ -37,7 +42,11 @@ def _unwrap_state_dict(payload: Any) -> dict[str, torch.Tensor]:
 def _resize_video(video_rgb: np.ndarray, image_hw: tuple[int, int]) -> np.ndarray:
     h, w = image_hw
     resized = [
-        cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA if frame.shape[0] >= h else cv2.INTER_LINEAR)
+        cv2.resize(
+            frame,
+            (w, h),
+            interpolation=cv2.INTER_AREA if frame.shape[0] >= h else cv2.INTER_LINEAR,
+        )
         for frame in video_rgb
     ]
     return np.stack(resized, axis=0)
@@ -77,8 +86,12 @@ def _grid_query_points(
     rows = max(1, int(rows))
     margin_x = float(max(width - 1, 0)) * float(np.clip(margin_ratio, 0.0, 0.45))
     margin_y = float(max(height - 1, 0)) * float(np.clip(margin_ratio, 0.0, 0.45))
-    xs = np.linspace(margin_x, float(max(width - 1, 0)) - margin_x, num=cols, dtype=np.float32)
-    ys = np.linspace(margin_y, float(max(height - 1, 0)) - margin_y, num=rows, dtype=np.float32)
+    xs = np.linspace(
+        margin_x, float(max(width - 1, 0)) - margin_x, num=cols, dtype=np.float32
+    )
+    ys = np.linspace(
+        margin_y, float(max(height - 1, 0)) - margin_y, num=rows, dtype=np.float32
+    )
     grid = np.stack(np.meshgrid(xs, ys, indexing="xy"), axis=-1).reshape(-1, 2)
     if grid.shape[0] > max_points:
         pick = np.linspace(0, grid.shape[0] - 1, num=max_points, dtype=np.int64)
@@ -86,7 +99,9 @@ def _grid_query_points(
     return grid.astype(np.float32)
 
 
-def _make_anchor_clip_indices(num_frames: int, clip_frames: int, target_idx: int, source_idx: int = 0) -> np.ndarray:
+def _make_anchor_clip_indices(
+    num_frames: int, clip_frames: int, target_idx: int, source_idx: int = 0
+) -> np.ndarray:
     num_frames = int(num_frames)
     clip_frames = max(1, int(clip_frames))
     target_idx = int(np.clip(int(target_idx), 0, max(0, num_frames - 1)))
@@ -112,7 +127,10 @@ def _make_anchor_clip_indices(num_frames: int, clip_frames: int, target_idx: int
             mandatory = {int(source_idx), int(target_idx)}
             ranked = sorted(
                 [idx for idx in window if idx not in mandatory],
-                key=lambda idx: (min(abs(idx - target_idx), abs(idx - source_idx)), idx),
+                key=lambda idx: (
+                    min(abs(idx - target_idx), abs(idx - source_idx)),
+                    idx,
+                ),
             )
             keep = set(ranked[: max(0, clip_frames - len(mandatory))]) | mandatory
             window = sorted(keep)
@@ -167,9 +185,9 @@ def _apply_sim3_to_xyz(
     flat_out = out.reshape(-1, 3)
     valid = np.isfinite(flat_src).all(axis=1)
     if np.any(valid):
-        flat_out[valid] = (float(scale) * (np.asarray(rot, dtype=np.float64) @ flat_src[valid].T)).T + np.asarray(
-            trans, dtype=np.float64
-        )
+        flat_out[valid] = (
+            float(scale) * (np.asarray(rot, dtype=np.float64) @ flat_src[valid].T)
+        ).T + np.asarray(trans, dtype=np.float64)
     return out.astype(np.float32)
 
 
@@ -205,7 +223,9 @@ def _estimate_overlap_sim3(
     scores = np.minimum(prev_conf[valid], curr_conf[valid])
     if scores.size >= 4:
         order = np.argsort(scores)[::-1]
-        keep = max(3, int(np.ceil(float(scores.size) * float(np.clip(keep_ratio, 0.0, 1.0)))))
+        keep = max(
+            3, int(np.ceil(float(scores.size) * float(np.clip(keep_ratio, 0.0, 1.0))))
+        )
         pick = order[:keep]
         src = src[pick]
         dst = dst[pick]
@@ -213,7 +233,11 @@ def _estimate_overlap_sim3(
     if sim3 is None:
         return None
     scale, rot, trans = sim3
-    return float(scale), np.asarray(rot, dtype=np.float64), np.asarray(trans, dtype=np.float64)
+    return (
+        float(scale),
+        np.asarray(rot, dtype=np.float64),
+        np.asarray(trans, dtype=np.float64),
+    )
 
 
 def _build_query_for_targets(
@@ -224,8 +248,12 @@ def _build_query_for_targets(
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
     return {
-        "u": torch.from_numpy(query_uv_norm[:, 0]).to(device=device, dtype=torch.float32),
-        "v": torch.from_numpy(query_uv_norm[:, 1]).to(device=device, dtype=torch.float32),
+        "u": torch.from_numpy(query_uv_norm[:, 0]).to(
+            device=device, dtype=torch.float32
+        ),
+        "v": torch.from_numpy(query_uv_norm[:, 1]).to(
+            device=device, dtype=torch.float32
+        ),
         "t_src": torch.from_numpy(t_src).to(device=device, dtype=torch.long),
         "t_tgt": torch.from_numpy(t_tgt).to(device=device, dtype=torch.long),
         "t_cam": torch.from_numpy(t_cam).to(device=device, dtype=torch.long),
@@ -249,11 +277,15 @@ def _run_full_clip_queries(
     else:
         query_src = np.asarray(query_src_indices, dtype=np.int64).reshape(-1)
         if query_src.shape[0] != num_queries:
-            raise ValueError(f"query_src_indices must have shape [{num_queries}], got {query_src.shape}")
+            raise ValueError(
+                f"query_src_indices must have shape [{num_queries}], got {query_src.shape}"
+            )
 
     t_src = np.repeat(query_src, num_frames, axis=0)
     t_tgt = np.tile(np.arange(num_frames, dtype=np.int64), num_queries)
-    memory = _encode_model_memory(model=model, video_b=video_clip, aspect_b=aspect_ratio)
+    memory = _encode_model_memory(
+        model=model, video_b=video_clip, aspect_b=aspect_ratio
+    )
     query_local = _build_query_for_targets(
         query_uv_norm=repeated_uv,
         t_src=t_src,
@@ -321,7 +353,9 @@ def _run_clip_queries_for_target_indices(
     else:
         query_src = np.asarray(query_src_indices, dtype=np.int64).reshape(-1)
         if query_src.shape[0] != num_queries:
-            raise ValueError(f"query_src_indices must have shape [{num_queries}], got {query_src.shape}")
+            raise ValueError(
+                f"query_src_indices must have shape [{num_queries}], got {query_src.shape}"
+            )
 
     t_src = np.repeat(query_src, num_targets)
     t_tgt = np.tile(target_ids, num_queries)
@@ -388,18 +422,24 @@ def _infer_tracks(
         [[float(video_model_rgb.shape[2]) / float(max(1, video_model_rgb.shape[1]))]],
         dtype=np.float32,
     )
-    aspect_tensor = torch.from_numpy(aspect_value).to(device=device, dtype=torch.float32)
+    aspect_tensor = torch.from_numpy(aspect_value).to(
+        device=device, dtype=torch.float32
+    )
 
     tracks_xyz_local = np.full((num_queries, num_frames, 3), np.nan, dtype=np.float32)
     tracks_xyz_ref0 = np.full_like(tracks_xyz_local, np.nan)
     tracks_uv = np.full((num_queries, num_frames, 2), np.nan, dtype=np.float32)
     tracks_visibility = np.zeros((num_queries, num_frames), dtype=bool)
-    tracks_visibility_logits = np.full((num_queries, num_frames), np.nan, dtype=np.float32)
+    tracks_visibility_logits = np.full(
+        (num_queries, num_frames), np.nan, dtype=np.float32
+    )
     tracks_confidence = np.full((num_queries, num_frames), np.nan, dtype=np.float32)
     dense_mode = bool(umeyama_slide_window_dense)
     slide_window_enabled = bool(umeyama_slide_window) or dense_mode
     stitch_diagnostics: dict[str, Any] = {
-        "mode": "umeyama_slide_window_dense" if dense_mode else ("umeyama_slide_window" if slide_window_enabled else "anchor_clip"),
+        "mode": "umeyama_slide_window_dense"
+        if dense_mode
+        else ("umeyama_slide_window" if slide_window_enabled else "anchor_clip"),
         "clip_frames": int(clip_frames),
         "dense_grid_size": int(dense_grid_size) if dense_mode else 0,
         "keep_ratio": 0.85,
@@ -408,7 +448,9 @@ def _infer_tracks(
     if query_src_indices_global is None:
         query_src_indices_global = np.zeros((num_queries,), dtype=np.int64)
     else:
-        query_src_indices_global = np.asarray(query_src_indices_global, dtype=np.int64).reshape(num_queries)
+        query_src_indices_global = np.asarray(
+            query_src_indices_global, dtype=np.int64
+        ).reshape(num_queries)
 
     video_tensor = (
         torch.from_numpy(video_model_rgb)
@@ -438,7 +480,9 @@ def _infer_tracks(
         else:
             clip_groups: dict[tuple[int, ...], list[tuple[int, int, int, int]]] = {}
             for frame_idx in range(num_frames):
-                for src_idx in sorted(set(int(v) for v in query_src_indices_global.tolist())):
+                for src_idx in sorted(
+                    set(int(v) for v in query_src_indices_global.tolist())
+                ):
                     clip_indices = _make_anchor_clip_indices(
                         num_frames=num_frames,
                         clip_frames=clip_frames,
@@ -447,14 +491,16 @@ def _infer_tracks(
                     )
                     local_tgt_idx = int(np.flatnonzero(clip_indices == frame_idx)[0])
                     local_src_idx = int(np.flatnonzero(clip_indices == int(src_idx))[0])
-                    clip_groups.setdefault(tuple(int(v) for v in clip_indices.tolist()), []).append(
-                        (frame_idx, local_tgt_idx, int(src_idx), local_src_idx)
-                    )
+                    clip_groups.setdefault(
+                        tuple(int(v) for v in clip_indices.tolist()), []
+                    ).append((frame_idx, local_tgt_idx, int(src_idx), local_src_idx))
 
             for clip_key, assignments in clip_groups.items():
                 clip_indices = np.asarray(clip_key, dtype=np.int64)
                 video_clip = video_tensor[:, clip_indices]
-                memory = _encode_model_memory(model=model, video_b=video_clip, aspect_b=aspect_tensor)
+                memory = _encode_model_memory(
+                    model=model, video_b=video_clip, aspect_b=aspect_tensor
+                )
 
                 by_src: dict[int, list[tuple[int, int, int]]] = {}
                 for frame_idx, local_tgt_idx, src_idx, local_src_idx in assignments:
@@ -462,13 +508,19 @@ def _infer_tracks(
                         (int(frame_idx), int(local_tgt_idx), int(local_src_idx))
                     )
                 for src_idx, src_assignments in by_src.items():
-                    global_frame_ids = np.asarray([item[0] for item in src_assignments], dtype=np.int64)
-                    local_target_ids = np.asarray([item[1] for item in src_assignments], dtype=np.int64)
+                    global_frame_ids = np.asarray(
+                        [item[0] for item in src_assignments], dtype=np.int64
+                    )
+                    local_target_ids = np.asarray(
+                        [item[1] for item in src_assignments], dtype=np.int64
+                    )
                     local_src_idx = int(src_assignments[0][2])
                     valid_idx = np.flatnonzero(query_src_indices_global == int(src_idx))
                     if valid_idx.size <= 0:
                         continue
-                    local_src_ids = np.full((valid_idx.shape[0],), local_src_idx, dtype=np.int64)
+                    local_src_ids = np.full(
+                        (valid_idx.shape[0],), local_src_idx, dtype=np.int64
+                    )
                     pred_local, pred_ref = _run_clip_queries_for_target_indices(
                         model=model,
                         video_clip=video_clip,
@@ -480,15 +532,25 @@ def _infer_tracks(
                         query_chunk_size=query_chunk_size,
                     )
 
-                    tracks_xyz_local[valid_idx[:, None], global_frame_ids[None, :]] = pred_local["xyz_3d"].astype(np.float32)
-                    tracks_xyz_ref0[valid_idx[:, None], global_frame_ids[None, :]] = pred_ref["xyz_3d"].astype(np.float32)
-                    tracks_uv[valid_idx[:, None], global_frame_ids[None, :]] = pred_local["uv_2d"].astype(np.float32)
+                    tracks_xyz_local[valid_idx[:, None], global_frame_ids[None, :]] = (
+                        pred_local["xyz_3d"].astype(np.float32)
+                    )
+                    tracks_xyz_ref0[valid_idx[:, None], global_frame_ids[None, :]] = (
+                        pred_ref["xyz_3d"].astype(np.float32)
+                    )
+                    tracks_uv[valid_idx[:, None], global_frame_ids[None, :]] = (
+                        pred_local["uv_2d"].astype(np.float32)
+                    )
                     pred_vis_logits = pred_local["visibility"].astype(np.float32)
-                    tracks_visibility_logits[valid_idx[:, None], global_frame_ids[None, :]] = pred_vis_logits
+                    tracks_visibility_logits[
+                        valid_idx[:, None], global_frame_ids[None, :]
+                    ] = pred_vis_logits
                     tracks_visibility[valid_idx[:, None], global_frame_ids[None, :]] = (
                         1.0 / (1.0 + np.exp(-pred_vis_logits)) > 0.5
                     )
-                    tracks_confidence[valid_idx[:, None], global_frame_ids[None, :]] = pred_local["confidence"].astype(np.float32)
+                    tracks_confidence[valid_idx[:, None], global_frame_ids[None, :]] = (
+                        pred_local["confidence"].astype(np.float32)
+                    )
 
     return {
         "tracks_xyz_local": tracks_xyz_local,
