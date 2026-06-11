@@ -28,6 +28,10 @@ vis = [
 test = [
     "pytest>=8.0.0",
 ]
+dev = [
+    "ruff>=0.15.16",
+    "ty>=0.0.48",
+]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu130" }

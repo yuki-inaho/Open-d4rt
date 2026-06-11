@@ -39,7 +39,9 @@ def test_load_frames_decodes_gif_fallback_and_respects_max_frames(
         Image.fromarray(np.full((8, 10, 3), fill_value=idx * 40, dtype=np.uint8))
         for idx in range(3)
     ]
-    frames[0].save(gif_path, save_all=True, append_images=frames[1:], duration=100, loop=0)
+    frames[0].save(
+        gif_path, save_all=True, append_images=frames[1:], duration=100, loop=0
+    )
 
     def fail_video_decode(_path: Path, _max_frames: int) -> tuple[np.ndarray, float]:
         raise RuntimeError("force GIF fallback")
@@ -71,7 +73,11 @@ def test_write_demo_package_emits_viewer_assets(tmp_path: Path) -> None:
     point_xyz = np.stack(
         [
             np.column_stack(
-                [np.arange(point_count), np.full(point_count, frame_idx), np.ones(point_count)]
+                [
+                    np.arange(point_count),
+                    np.full(point_count, frame_idx),
+                    np.ones(point_count),
+                ]
             )
             for frame_idx in range(t_count)
         ],

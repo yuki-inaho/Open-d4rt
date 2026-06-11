@@ -18,7 +18,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from infer_track_3d import _load_video_rgb, _resolve_device, _resize_video, _unwrap_state_dict
+from infer_track_3d import (
+    _load_video_rgb,
+    _resolve_device,
+    _resize_video,
+    _unwrap_state_dict,
+)
 from src.core import build_logger, load_yaml_config, seed_everything
 from src.model import build_model
 from vis.build_like_demo import (
@@ -50,11 +55,15 @@ def _non_negative_float(raw: str) -> float:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build a lightweight Viser demo package from a local video or GIF.")
+    parser = argparse.ArgumentParser(
+        description="Build a lightweight Viser demo package from a local video or GIF."
+    )
     parser.add_argument("--config", required=True, help="Model config YAML.")
     parser.add_argument("--ckpt-path", required=True, help="OpenD4RT checkpoint path.")
     parser.add_argument("--input", required=True, help="Input video/GIF path.")
-    parser.add_argument("--output-dir", required=True, help="Output demo package directory.")
+    parser.add_argument(
+        "--output-dir", required=True, help="Output demo package directory."
+    )
     parser.add_argument("--num-frames", type=_positive_int, default=4)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--point-grid-cols", type=_positive_int, default=8)
@@ -64,7 +73,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--track-min-visible-frames", type=_positive_int, default=2)
     parser.add_argument("--point-query-chunk-size", type=_positive_int, default=16)
     parser.add_argument("--track-query-chunk-size", type=_positive_int, default=16)
-    parser.add_argument("--fps", type=_non_negative_float, default=0.0, help="Override output FPS. Use 0 to preserve input FPS.")
+    parser.add_argument(
+        "--fps",
+        type=_non_negative_float,
+        default=0.0,
+        help="Override output FPS. Use 0 to preserve input FPS.",
+    )
     parser.add_argument("--no-suppress-depth-boundary-tracks", action="store_true")
     return parser.parse_args()
 
@@ -164,7 +178,9 @@ def _write_demo_package(
             "rgb": int_list("point_rgb"),
             "uvPx": _jsonable_float_array(package["point_uv_px"], ndigits=3),
             "confidence": _jsonable_float_array(package["point_confidence"], ndigits=4),
-            "motionScore": _jsonable_float_array(package["point_motion_score"], ndigits=5),
+            "motionScore": _jsonable_float_array(
+                package["point_motion_score"], ndigits=5
+            ),
             "isDynamic": int_list("point_is_dynamic"),
         },
         "pointsRaw": {
@@ -172,7 +188,9 @@ def _write_demo_package(
         },
     }
 
-    (assets_dir / "demo_data.json").write_text(json.dumps(data_json, ensure_ascii=False), encoding="utf-8")
+    (assets_dir / "demo_data.json").write_text(
+        json.dumps(data_json, ensure_ascii=False), encoding="utf-8"
+    )
     video_name, poster_name = _export_video_from_frames(
         video_rgb=video_rgb,
         fps=output_fps,
@@ -185,7 +203,9 @@ def _write_demo_package(
         "data_json": "assets/demo_data.json",
         "viewer": "viser",
     }
-    (output_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def main() -> int:
@@ -210,7 +230,9 @@ def main() -> int:
     video_rgb, input_fps = _load_frames(input_path, max_frames=args.num_frames)
     fps = float(args.fps if args.fps > 0.0 else input_fps)
     image_size = cfg.get_path("model.input.image_size", [256, 256])
-    video_model_rgb = _resize_video(video_rgb, image_hw=(int(image_size[0]), int(image_size[1])))
+    video_model_rgb = _resize_video(
+        video_rgb, image_hw=(int(image_size[0]), int(image_size[1]))
+    )
 
     point_query_uv_px = _build_uv_grid(
         width=int(video_rgb.shape[2]),
@@ -225,13 +247,20 @@ def main() -> int:
     state = _load_checkpoint_model(ckpt_path)
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing or unexpected:
-        raise RuntimeError(f"Checkpoint mismatch: missing={len(missing)}, unexpected={len(unexpected)}")
+        raise RuntimeError(
+            f"Checkpoint mismatch: missing={len(missing)}, unexpected={len(unexpected)}"
+        )
     del state
     gc.collect()
 
     device = _resolve_device(args.device)
     model = model.to(device).eval()
-    logger.info("Running inference on %s with %d frames and %d point queries", device, video_rgb.shape[0], point_query_uv_px.shape[0])
+    logger.info(
+        "Running inference on %s with %d frames and %d point queries",
+        device,
+        video_rgb.shape[0],
+        point_query_uv_px.shape[0],
+    )
     package = _export_demo_data(
         model=model,
         video_rgb=video_rgb,
@@ -244,7 +273,13 @@ def main() -> int:
         track_min_visible_frames=args.track_min_visible_frames,
         suppress_depth_boundary_tracks=not bool(args.no_suppress_depth_boundary_tracks),
     )
-    _write_demo_package(output_dir=output_dir, input_path=input_path, package=package, video_rgb=video_rgb, fps=fps)
+    _write_demo_package(
+        output_dir=output_dir,
+        input_path=input_path,
+        package=package,
+        video_rgb=video_rgb,
+        fps=fps,
+    )
     logger.info("Saved demo package to %s", output_dir)
     print(output_dir)
     return 0
