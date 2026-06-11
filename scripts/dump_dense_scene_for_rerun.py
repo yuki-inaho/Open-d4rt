@@ -21,7 +21,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from infer_track_3d import _resize_video  # noqa: E402
-from scripts.build_demo_from_video import _build_inference_model  # noqa: E402
+from scripts.build_demo_from_video import (  # noqa: E402
+    _build_inference_model,
+    _load_frames,
+)
 from scripts.dump_static_tracks_for_trajectory import (  # noqa: E402
     _load_named_frames,
     _select_frame_names,
@@ -36,11 +39,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--ckpt-path", required=True)
-    parser.add_argument(
-        "--image-dir", required=True, help="Directory of source frames."
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--image-dir", help="Directory of source frames.")
+    source.add_argument(
+        "--video", help="A video / GIF file (e.g. an official demo gif)."
     )
     parser.add_argument(
-        "--frame-list", help="Optional file of frame names; else sorted dir order."
+        "--frame-list", help="Optional file of frame names (with --image-dir)."
     )
     parser.add_argument("--output", required=True, help="Output .npz path.")
     parser.add_argument("--num-frames", type=int, default=24)
@@ -70,15 +75,21 @@ def main() -> int:
     args = parse_args()
     config_path = Path(args.config).resolve()
     ckpt_path = Path(args.ckpt_path).resolve()
-    image_dir = Path(args.image_dir).resolve()
     output_path = Path(args.output).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     logger = build_logger("dump_dense_scene", output_path.parent)
 
-    names = _resolve_frame_names(
-        image_dir, args.frame_list, args.num_frames, args.frame_stride
-    )
-    video_rgb = _load_named_frames(image_dir, names)
+    if args.video is not None:
+        video_rgb, _ = _load_frames(
+            Path(args.video).resolve(), max_frames=args.num_frames
+        )
+        names = [f"frame_{i + 1:05d}" for i in range(int(video_rgb.shape[0]))]
+    else:
+        image_dir = Path(args.image_dir).resolve()
+        names = _resolve_frame_names(
+            image_dir, args.frame_list, args.num_frames, args.frame_stride
+        )
+        video_rgb = _load_named_frames(image_dir, names)
     logger.info("Loaded %d frames %s", video_rgb.shape[0], video_rgb.shape[1:])
 
     cfg = load_yaml_config(config_path)
