@@ -7,7 +7,7 @@
 - **プロジェクト名称・領域:** OpenD4RT。D4RT論文の非公式PyTorch/GPU実装で、動画から4D再構成、疎な点追跡、点群可視化、WorldTrack評価を行う。
 - **最終成果物:** 学習・評価・推論・Viser可視化が再現可能なコード、checkpoint、設定、データ準備手順、デモ生成フロー。
 - **ビジネス背景・価値:** 動画ベースの動的シーン理解、3D/4D再構成、追跡評価の実験基盤として使う。カスタム動画や研究データで素早く動作確認できることが重要。
-- **現時点の進捗サマリ:** WorldTrack評価、学習コード、Viser demo、Hugging Face checkpoint導線がある。uv環境とローカル動画/GIFからの軽量demo生成スクリプトを追加済み。
+- **現時点の進捗サマリ:** WorldTrack評価、学習コード、Viser demo、Hugging Face checkpoint導線がある。uv環境とローカル動画/GIFからの軽量demo生成スクリプトを追加済み。さらに推論結果の可視化サブシステム(Rerun ライブラリ/CLI + Gradio アプリ)と、D4RT 推論軌跡 vs COLMAP の一致性チェッカーを追加済み(`docs/visualization_pipeline.md` 参照)。
 
 ## 2. クリティカルな要求・制約
 > 「壊してはいけない」品質・仕様ラインを箇条書きで列挙します。
@@ -29,6 +29,7 @@
 | テスト資産 | `run_eval_worldtrack.sh`, `run_build_worldtrack_demo.sh`, `scripts/build_demo_from_video.py` | 評価、WorldTrack demo、ローカル動画demoの動作確認コマンド。 |
 | 既知課題リスト | upstream issues: <https://github.com/Lijiaxin0111/Open-d4rt/issues> | custom dataset、KITTI、点群品質、demo可視化に関する既知論点。 |
 | データセット資料 | `docs/dataset/README.md`, `docs/dataset/*.md` | 学習データセットの配置、構造、注意点。 |
+| 可視化サブシステム | `docs/visualization_pipeline.md`, `vis/rerun_visualize.py`, `scripts/visualize_rerun.py`, `scripts/demo_gradio.py`, `scripts/dump_static_tracks_for_trajectory.py`, `scripts/check_colmap_trajectory_consistency.py` | demo package / static-tracks / COLMAP軌跡一致性 の Rerun・Gradio 可視化と設計概要。 |
 
 ## 4. タスク境界（任せること / 任せないこと）
 ### 任せるタスク（例）
@@ -71,7 +72,10 @@
   - `uv run python scripts/build_demo_from_video.py --config checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/model.yaml --ckpt-path checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt --input demo/softball_25_rgb_gt_pred_2d.gif --output-dir tmp/local_video_demo --num-frames 4 --device cuda`
   - `uv run python vis/serve_demo_viser.py --root tmp/local_video_demo --port 8082`
   - `LIMIT_SEQS=1 SUBSETS=adt_mini OUTPUT_DIR=tmp/eval_smoke bash run_eval_worldtrack.sh`
-- **依存ライブラリ:** PyTorch、TorchVision、NumPy、OpenCV headless、Pillow、Matplotlib、TensorBoard、lz4、Viser。Blackwell GPUではCUDA 13.0系PyTorch wheelを優先する。
+  - 可視化(Rerun, ヘッドレス): `uv run --extra vis python scripts/visualize_rerun.py --demo-package tmp/local_video_demo --mode rrd --output outputs/demo.rrd`
+  - 軌跡一致性 + スクショ: `uv run --extra vis --extra dev python scripts/visualize_rerun.py --tracks-npz <pred.npz> --colmap-model <sparse_txt> --mode screenshot --output outputs/traj.rrd --screenshot outputs/traj.png`
+  - Gradio 閲覧: `uv run --extra vis python scripts/demo_gradio.py --results-root tmp/`(既定 127.0.0.1:7860)
+- **依存ライブラリ:** PyTorch、TorchVision、NumPy、OpenCV headless、Pillow、Matplotlib、TensorBoard、lz4、Viser。可視化 extra(`--extra vis`)で Rerun (`rerun-sdk`)、Gradio、trimesh を追加。screenshot モードは `--extra dev` の Playwright CLI + chromium(`uv run playwright install chromium`)を使用。Blackwell GPUではCUDA 13.0系PyTorch wheelを優先する。
 - **連絡先/責任者:** TBD。GitHub上ではfork所有者 `yuki-inaho`、upstream所有者 `Lijiaxin0111` を確認する。
 
 > ※テンプレートは必要に応じて拡張・縮退して構いません。記入済みのドキュメントはバージョン管理してください。
