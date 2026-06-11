@@ -10,7 +10,9 @@ venv/
 /data
 /output
 /output_read/
+/outputs
 /tmp
+/temp
 
 # Model weights are distributed through Hugging Face, not this git repo.
 /checkpoints/**/*.ckpt
