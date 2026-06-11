@@ -42,6 +42,7 @@ torchvision = { index = "pytorch-cu130" }
 
 [tool.ruff.lint.per-file-ignores]
 "scripts/build_demo_from_video.py" = ["F722"]
+"scripts/_demo_types.py" = ["F722"]
 
 [[tool.uv.index]]
 name = "pytorch-cu130"

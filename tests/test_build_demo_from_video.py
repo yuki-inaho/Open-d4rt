@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import cv2
 import numpy as np
@@ -14,6 +14,105 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts import build_demo_from_video as demo
+
+
+def _stack_per_index(count: int, rows: int, builder) -> np.ndarray:
+    """Stack ``builder(index)`` rows into a ``(count, rows, 3)`` float32 array."""
+    return np.stack([builder(i) for i in range(count)], axis=0).astype(np.float32)
+
+
+def _make_point_xyz(t_count: int, point_count: int) -> np.ndarray:
+    """Per-frame point coordinates with a frame-indexed Y channel."""
+    return _stack_per_index(
+        t_count,
+        point_count,
+        lambda frame_idx: np.column_stack(
+            [
+                np.arange(point_count),
+                np.full(point_count, frame_idx),
+                np.ones(point_count),
+            ]
+        ),
+    )
+
+
+def _make_track_xyz(t_count: int, track_count: int) -> np.ndarray:
+    """Per-track coordinates with a track-indexed X/Z channel."""
+    return _stack_per_index(
+        track_count,
+        t_count,
+        lambda track_idx: np.column_stack(
+            [
+                np.full(t_count, track_idx),
+                np.arange(t_count),
+                np.ones(t_count) * (track_idx + 1),
+            ]
+        ),
+    )
+
+
+def make_demo_package(
+    t_count: int = 3,
+    h: int = 16,
+    w: int = 20,
+    point_count: int = 4,
+    track_count: int = 2,
+) -> dict[str, Any]:
+    """Build a minimal, internally consistent ``DemoPackage`` for asset tests."""
+    point_query_uv = np.array(
+        [[1.0, 1.0], [5.0, 4.0], [10.0, 8.0], [18.0, 14.0]],
+        dtype=np.float32,
+    )[:point_count]
+    return {
+        "num_frames": t_count,
+        "video_width": w,
+        "video_height": h,
+        "clip_frames": 48,
+        "track_stitch_diagnostics": {},
+        "track_query_uv_px": point_query_uv[:track_count],
+        "track_query_t_src": np.zeros((track_count,), dtype=np.int64),
+        "track_xyz_ref0": _make_track_xyz(t_count, track_count),
+        "track_uv_px": np.tile(
+            point_query_uv[:track_count, None, :],
+            (1, t_count, 1),
+        ).astype(np.float32),
+        "track_visibility": np.ones((track_count, t_count), dtype=bool),
+        "track_confidence": np.ones((track_count, t_count), dtype=np.float32),
+        "point_query_uv_px": point_query_uv,
+        "point_xyz_ref0": _make_point_xyz(t_count, point_count),
+        "point_visibility": np.ones((t_count, point_count), dtype=bool),
+        "point_uv_px": np.tile(point_query_uv[None, :, :], (t_count, 1, 1)).astype(
+            np.float32
+        ),
+        "point_confidence": np.ones((t_count, point_count), dtype=np.float32),
+        "point_motion_score": np.linspace(0.0, 1.0, num=point_count, dtype=np.float32),
+        "point_is_dynamic": np.array([0, 0, 1, 1], dtype=bool)[:point_count],
+        "point_rgb": np.tile(
+            np.array(
+                [[[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]]],
+                dtype=np.uint8,
+            )[:, :point_count],
+            (t_count, 1, 1),
+        ),
+        "bounds_min": np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        "bounds_max": np.array([3.0, 2.0, 2.0], dtype=np.float32),
+        "bounds_center": np.array([1.5, 1.0, 1.0], dtype=np.float32),
+        "bounds_radius": np.array([2.0], dtype=np.float32),
+        "ref0_K": np.array(
+            [[12.0, 0.0, w / 2.0], [0.0, 12.0, h / 2.0], [0.0, 0.0, 1.0]],
+            dtype=np.float32,
+        ),
+    }
+
+
+def _make_gradient_video(t_count: int, h: int, w: int) -> np.ndarray:
+    """RGB clip with frame-indexed red and per-axis green/blue ramps."""
+    video_rgb = np.zeros((t_count, h, w, 3), dtype=np.uint8)
+    for frame_idx in range(t_count):
+        video_rgb[frame_idx, :, :, 0] = 30 + frame_idx * 30
+        video_rgb[frame_idx, :, :, 1] = np.arange(w, dtype=np.uint8)[None, :]
+        video_rgb[frame_idx, :, :, 2] = np.arange(h, dtype=np.uint8)[:, None]
+    return video_rgb
 
 
 def test_positive_int_rejects_zero_and_negative_values() -> None:
@@ -61,83 +160,14 @@ def test_write_demo_package_emits_viewer_assets(tmp_path: Path) -> None:
     h, w = 16, 20
     point_count = 4
     track_count = 2
-    video_rgb = np.zeros((t_count, h, w, 3), dtype=np.uint8)
-    for frame_idx in range(t_count):
-        video_rgb[frame_idx, :, :, 0] = 30 + frame_idx * 30
-        video_rgb[frame_idx, :, :, 1] = np.arange(w, dtype=np.uint8)[None, :]
-        video_rgb[frame_idx, :, :, 2] = np.arange(h, dtype=np.uint8)[:, None]
-
-    point_query_uv = np.array(
-        [[1.0, 1.0], [5.0, 4.0], [10.0, 8.0], [18.0, 14.0]],
-        dtype=np.float32,
+    video_rgb = _make_gradient_video(t_count, h, w)
+    package = make_demo_package(
+        t_count=t_count,
+        h=h,
+        w=w,
+        point_count=point_count,
+        track_count=track_count,
     )
-    point_xyz = np.stack(
-        [
-            np.column_stack(
-                [
-                    np.arange(point_count),
-                    np.full(point_count, frame_idx),
-                    np.ones(point_count),
-                ]
-            )
-            for frame_idx in range(t_count)
-        ],
-        axis=0,
-    ).astype(np.float32)
-    track_xyz = np.stack(
-        [
-            np.column_stack(
-                [
-                    np.full(t_count, track_idx),
-                    np.arange(t_count),
-                    np.ones(t_count) * (track_idx + 1),
-                ]
-            )
-            for track_idx in range(track_count)
-        ],
-        axis=0,
-    ).astype(np.float32)
-
-    package = {
-        "num_frames": t_count,
-        "video_width": w,
-        "video_height": h,
-        "clip_frames": 48,
-        "track_stitch_diagnostics": {},
-        "track_query_uv_px": point_query_uv[:track_count],
-        "track_query_t_src": np.zeros((track_count,), dtype=np.int64),
-        "track_xyz_ref0": track_xyz,
-        "track_uv_px": np.tile(
-            point_query_uv[:track_count, None, :],
-            (1, t_count, 1),
-        ).astype(np.float32),
-        "track_visibility": np.ones((track_count, t_count), dtype=bool),
-        "track_confidence": np.ones((track_count, t_count), dtype=np.float32),
-        "point_query_uv_px": point_query_uv,
-        "point_xyz_ref0": point_xyz,
-        "point_visibility": np.ones((t_count, point_count), dtype=bool),
-        "point_uv_px": np.tile(point_query_uv[None, :, :], (t_count, 1, 1)).astype(
-            np.float32
-        ),
-        "point_confidence": np.ones((t_count, point_count), dtype=np.float32),
-        "point_motion_score": np.linspace(0.0, 1.0, num=point_count, dtype=np.float32),
-        "point_is_dynamic": np.array([0, 0, 1, 1], dtype=bool),
-        "point_rgb": np.tile(
-            np.array(
-                [[[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]]],
-                dtype=np.uint8,
-            ),
-            (t_count, 1, 1),
-        ),
-        "bounds_min": np.array([0.0, 0.0, 0.0], dtype=np.float32),
-        "bounds_max": np.array([3.0, 2.0, 2.0], dtype=np.float32),
-        "bounds_center": np.array([1.5, 1.0, 1.0], dtype=np.float32),
-        "bounds_radius": np.array([2.0], dtype=np.float32),
-        "ref0_K": np.array(
-            [[12.0, 0.0, w / 2.0], [0.0, 12.0, h / 2.0], [0.0, 0.0, 1.0]],
-            dtype=np.float32,
-        ),
-    }
 
     output_dir = tmp_path / "demo_package"
     input_path = tmp_path / "source.gif"

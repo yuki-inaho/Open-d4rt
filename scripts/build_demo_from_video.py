@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Build a Viser demo package from a local video or GIF."""
+"""Build a Viser demo package from a local video or GIF.
+
+Pipeline overview:
+  1. Parse CLI args and resolve/validate the config, input, and checkpoint paths.
+  2. Decode the input clip into RGB frames (with a PIL GIF fallback decoder).
+  3. Build the D4RT model and load the checkpoint weights onto the target device.
+  4. Run inference to produce per-frame point and track predictions.
+  5. Write the demo package: ``demo_data.json`` + ``manifest.json`` + video assets.
+"""
 
 from __future__ import annotations
 
@@ -8,13 +16,12 @@ import gc
 import json
 import sys
 from pathlib import Path
-from typing import Any, TypeAlias, TypedDict, cast
+from typing import Any, cast
 
 import numpy as np
 import torch
 from beartype import beartype
-from jaxtyping import Bool, Float, Int, UInt8, jaxtyped
-from numpy.typing import NDArray
+from jaxtyping import jaxtyped
 from PIL import Image, ImageSequence
 
 # Local script execution needs repo root on sys.path before project imports.
@@ -28,6 +35,27 @@ from infer_track_3d import (  # noqa: E402
     _resize_video,
     _unwrap_state_dict,
 )
+from scripts._demo_types import (  # noqa: E402
+    BoundsRadius,
+    BoundsVector,
+    DemoPackage,
+    IntrinsicsMatrix,
+    PointConfidenceArray,
+    PointDynamicMaskArray,
+    PointFrameUvArray,
+    PointMotionScoreArray,
+    PointRgbArray,
+    PointVisibilityArray,
+    PointXyzArray,
+    TrackConfidenceArray,
+    TrackFrameUvArray,
+    TrackQueryTimeArray,
+    TrackVisibilityArray,
+    TrackXyzArray,
+    UvPointArray,
+    UvTrackArray,
+    VideoRGB,
+)
 from src.core import build_logger, load_yaml_config, seed_everything  # noqa: E402
 from src.model import build_model  # noqa: E402
 from vis.build_like_demo import (  # noqa: E402
@@ -37,56 +65,37 @@ from vis.build_like_demo import (  # noqa: E402
     _jsonable_float_array,
 )
 
-FloatArray: TypeAlias = NDArray[np.floating[Any]]
-IntArray: TypeAlias = NDArray[np.integer[Any]]
-BoolArray: TypeAlias = NDArray[np.bool_]
-UInt8Array: TypeAlias = NDArray[np.uint8]
+# Fallback output FPS used when neither the CLI override nor the input clip
+# supplies a positive frame rate.
+DEFAULT_OUTPUT_FPS = 8.0
 
-VideoRGB: TypeAlias = UInt8[UInt8Array, "frames height width 3"]
-UvPointArray: TypeAlias = Float[FloatArray, "points 2"]
-UvTrackArray: TypeAlias = Float[FloatArray, "tracks 2"]
-TrackFrameUvArray: TypeAlias = Float[FloatArray, "tracks frames 2"]
-PointFrameUvArray: TypeAlias = Float[FloatArray, "frames points 2"]
-TrackXyzArray: TypeAlias = Float[FloatArray, "tracks frames 3"]
-PointXyzArray: TypeAlias = Float[FloatArray, "frames points 3"]
-TrackVisibilityArray: TypeAlias = Bool[BoolArray, "tracks frames"]
-PointVisibilityArray: TypeAlias = Bool[BoolArray, "frames points"]
-TrackConfidenceArray: TypeAlias = Float[FloatArray, "tracks frames"]
-PointConfidenceArray: TypeAlias = Float[FloatArray, "frames points"]
-PointMotionScoreArray: TypeAlias = Float[FloatArray, "points"]  # noqa: F821
-PointDynamicMaskArray: TypeAlias = Bool[BoolArray, "points"]  # noqa: F821
-PointRgbArray: TypeAlias = UInt8[UInt8Array, "frames points 3"]
-TrackQueryTimeArray: TypeAlias = Int[IntArray, "tracks"]  # noqa: F821
-BoundsVector: TypeAlias = Float[FloatArray, "3"]
-BoundsRadius: TypeAlias = Float[FloatArray, "1"]
-IntrinsicsMatrix: TypeAlias = Float[FloatArray, "3 3"]
+# Package fields covered by the runtime shape/dtype contract in
+# ``_validate_demo_arrays``. Mirrors that function's keyword parameters so the
+# call site can be data-driven instead of re-spelling every field.
+_VALIDATED_ARRAY_FIELDS: tuple[str, ...] = (
+    "track_query_uv_px",
+    "track_query_t_src",
+    "track_xyz_ref0",
+    "track_uv_px",
+    "track_visibility",
+    "track_confidence",
+    "point_query_uv_px",
+    "point_xyz_ref0",
+    "point_visibility",
+    "point_uv_px",
+    "point_confidence",
+    "point_motion_score",
+    "point_is_dynamic",
+    "point_rgb",
+    "bounds_min",
+    "bounds_max",
+    "bounds_center",
+    "bounds_radius",
+    "ref0_K",
+)
 
 
-class DemoPackage(TypedDict):
-    num_frames: int
-    video_width: int
-    video_height: int
-    clip_frames: int
-    track_stitch_diagnostics: dict[str, Any]
-    track_query_uv_px: UvTrackArray
-    track_query_t_src: TrackQueryTimeArray
-    track_xyz_ref0: TrackXyzArray
-    track_uv_px: TrackFrameUvArray
-    track_visibility: TrackVisibilityArray
-    track_confidence: TrackConfidenceArray
-    point_query_uv_px: UvPointArray
-    point_xyz_ref0: PointXyzArray
-    point_visibility: PointVisibilityArray
-    point_uv_px: PointFrameUvArray
-    point_confidence: PointConfidenceArray
-    point_motion_score: PointMotionScoreArray
-    point_is_dynamic: PointDynamicMaskArray
-    point_rgb: PointRgbArray
-    bounds_min: BoundsVector
-    bounds_max: BoundsVector
-    bounds_center: BoundsVector
-    bounds_radius: BoundsRadius
-    ref0_K: IntrinsicsMatrix
+# === Argument type validators ===
 
 
 def _positive_int(raw: str) -> int:
@@ -138,24 +147,40 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-@jaxtyped(typechecker=beartype)
-def _load_frames(path: Path, max_frames: int) -> tuple[VideoRGB, float]:
-    video_decode_error: Exception | None = None
-    try:
-        return _load_video_rgb(path, max_frames=max_frames)
-    except Exception as exc:
-        if path.suffix.lower() != ".gif":
-            raise
-        video_decode_error = exc
+# === Small conversion / guard helpers ===
 
+
+def _resolve_fps(provided_fps: float, fallback_fps: float) -> float:
+    """Return ``provided_fps`` when positive, else ``fallback_fps``."""
+    return float(provided_fps if provided_fps > 0.0 else fallback_fps)
+
+
+def _ensure_file_exists(path: Path) -> None:
+    """Raise ``FileNotFoundError`` when a required input path is missing."""
+    if not path.exists():
+        raise FileNotFoundError(path)
+
+
+def _to_int_list(value: Any) -> list[Any]:
+    """Convert an array-like to a JSON-serializable int32 nested list."""
+    return np.asarray(value, dtype=np.int32).tolist()
+
+
+# === Frame decoding ===
+
+
+@jaxtyped(typechecker=beartype)
+def _decode_gif_frames(
+    path: Path, max_frames: int, video_decode_error: Exception
+) -> tuple[VideoRGB, float]:
+    """Decode a GIF into RGB frames with PIL when the video decoder fails."""
     frames: list[np.ndarray] = []
     try:
         with Image.open(path) as img:
             duration_ms = float(img.info.get("duration", 125) or 125)
             fps = 1000.0 / max(duration_ms, 1.0)
             for frame in ImageSequence.Iterator(img):
-                rgb = frame.convert("RGB")
-                frames.append(np.asarray(rgb, dtype=np.uint8))
+                frames.append(np.asarray(frame.convert("RGB"), dtype=np.uint8))
                 if len(frames) >= int(max_frames):
                     break
     except Exception as gif_error:
@@ -165,6 +190,20 @@ def _load_frames(path: Path, max_frames: int) -> tuple[VideoRGB, float]:
             f"No frames decoded from GIF: {path}"
         ) from video_decode_error
     return np.stack(frames, axis=0), float(fps)
+
+
+@jaxtyped(typechecker=beartype)
+def _load_frames(path: Path, max_frames: int) -> tuple[VideoRGB, float]:
+    """Decode the input clip, falling back to PIL GIF decoding on failure."""
+    try:
+        return _load_video_rgb(path, max_frames=max_frames)
+    except Exception as video_decode_error:
+        if path.suffix.lower() != ".gif":
+            raise
+        return _decode_gif_frames(path, max_frames, video_decode_error)
+
+
+# === Demo-package validation and writing ===
 
 
 @jaxtyped(typechecker=beartype)
@@ -191,55 +230,34 @@ def _validate_demo_arrays(
     bounds_radius: BoundsRadius,
     ref0_K: IntrinsicsMatrix,
 ) -> None:
-    """Validate key demo-package array contracts before writing viewer assets."""
+    """Validate demo-package array shapes, dtypes, and cross-dimension consistency.
+
+    The body is intentionally empty: the ``@jaxtyped(typechecker=beartype)``
+    decorator enforces every parameter's shape/dtype and the shared axis names
+    (``frames``/``tracks``/``points``) across all arrays at call time, acting as
+    a precondition guard before viewer assets are written.
+    """
 
 
-def _load_checkpoint_model(path: Path) -> dict[str, torch.Tensor]:
-    try:
-        payload = torch.load(path, map_location="cpu", mmap=True)
-    except TypeError:
-        payload = torch.load(path, map_location="cpu")
-    state = _unwrap_state_dict(payload)
-    if not state:
-        raise RuntimeError(f"No model weights found in checkpoint: {path}")
-    return state
+def _validate_package_contract(package: DemoPackage, video_rgb: VideoRGB) -> None:
+    """Run the runtime array contract over a demo package in one call.
 
-
-def _write_demo_package(
-    *,
-    output_dir: Path,
-    input_path: Path,
-    package: DemoPackage,
-    video_rgb: VideoRGB,
-    fps: float,
-) -> None:
-    assets_dir = output_dir / "assets"
-    assets_dir.mkdir(parents=True, exist_ok=True)
-    output_fps = float(fps if fps > 0.0 else 8.0)
+    Data-drives the validation from :data:`_VALIDATED_ARRAY_FIELDS` so the field
+    list lives in exactly one place. Splatting the fields as keyword arguments
+    keeps jaxtyping's per-field and cross-dimension checks fully active.
+    """
+    fields = cast("dict[str, Any]", package)
     _validate_demo_arrays(
         video_rgb=video_rgb,
-        track_query_uv_px=package["track_query_uv_px"],
-        track_query_t_src=package["track_query_t_src"],
-        track_xyz_ref0=package["track_xyz_ref0"],
-        track_uv_px=package["track_uv_px"],
-        track_visibility=package["track_visibility"],
-        track_confidence=package["track_confidence"],
-        point_query_uv_px=package["point_query_uv_px"],
-        point_xyz_ref0=package["point_xyz_ref0"],
-        point_visibility=package["point_visibility"],
-        point_uv_px=package["point_uv_px"],
-        point_confidence=package["point_confidence"],
-        point_motion_score=package["point_motion_score"],
-        point_is_dynamic=package["point_is_dynamic"],
-        point_rgb=package["point_rgb"],
-        bounds_min=package["bounds_min"],
-        bounds_max=package["bounds_max"],
-        bounds_center=package["bounds_center"],
-        bounds_radius=package["bounds_radius"],
-        ref0_K=package["ref0_K"],
+        **{name: fields[name] for name in _VALIDATED_ARRAY_FIELDS},
     )
 
-    meta = {
+
+def _build_demo_meta(
+    package: DemoPackage, input_path: Path, output_fps: float
+) -> dict[str, Any]:
+    """Assemble the ``meta`` block describing the demo package."""
+    return {
         "fps": output_fps,
         "numFrames": int(package["num_frames"]),
         "videoWidth": int(package["video_width"]),
@@ -267,36 +285,47 @@ def _write_demo_package(
         },
     }
 
-    def int_list(value: Any) -> list[Any]:
-        return np.asarray(value, dtype=np.int32).tolist()
 
-    data_json = {
+def _build_demo_data_json(package: DemoPackage, meta: dict[str, Any]) -> dict[str, Any]:
+    """Assemble the viewer ``demo_data.json`` payload from a demo package."""
+    return {
         "meta": meta,
         "tracks": {
             "queryUvPx": _jsonable_float_array(package["track_query_uv_px"], ndigits=3),
-            "queryTSrc": int_list(package["track_query_t_src"]),
+            "queryTSrc": _to_int_list(package["track_query_t_src"]),
             "xyzRef0": _jsonable_float_array(package["track_xyz_ref0"], ndigits=5),
             "uvPx": _jsonable_float_array(package["track_uv_px"], ndigits=3),
-            "visibility": int_list(package["track_visibility"]),
+            "visibility": _to_int_list(package["track_visibility"]),
             "confidence": _jsonable_float_array(package["track_confidence"], ndigits=4),
         },
         "points": {
             "queryUvPx": _jsonable_float_array(package["point_query_uv_px"], ndigits=3),
             "xyzRef0": _jsonable_float_array(package["point_xyz_ref0"], ndigits=5),
-            "visibility": int_list(package["point_visibility"]),
-            "rgb": int_list(package["point_rgb"]),
+            "visibility": _to_int_list(package["point_visibility"]),
+            "rgb": _to_int_list(package["point_rgb"]),
             "uvPx": _jsonable_float_array(package["point_uv_px"], ndigits=3),
             "confidence": _jsonable_float_array(package["point_confidence"], ndigits=4),
             "motionScore": _jsonable_float_array(
                 package["point_motion_score"], ndigits=5
             ),
-            "isDynamic": int_list(package["point_is_dynamic"]),
+            "isDynamic": _to_int_list(package["point_is_dynamic"]),
         },
         "pointsRaw": {
             "xyzRef0": _jsonable_float_array(package["point_xyz_ref0"], ndigits=5),
         },
     }
 
+
+def _write_viewer_files(
+    *,
+    output_dir: Path,
+    assets_dir: Path,
+    input_path: Path,
+    data_json: dict[str, Any],
+    video_rgb: VideoRGB,
+    output_fps: float,
+) -> None:
+    """Write ``demo_data.json``, the video/poster assets, and ``manifest.json``."""
     (assets_dir / "demo_data.json").write_text(
         json.dumps(data_json, ensure_ascii=False), encoding="utf-8"
     )
@@ -317,27 +346,91 @@ def _write_demo_package(
     )
 
 
-def main() -> int:
-    args = parse_args()
+def _write_demo_package(
+    *,
+    output_dir: Path,
+    input_path: Path,
+    package: DemoPackage,
+    video_rgb: VideoRGB,
+    fps: float,
+) -> None:
+    """Validate the package and write the full Viser demo bundle to disk."""
+    assets_dir = output_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    output_fps = _resolve_fps(fps, DEFAULT_OUTPUT_FPS)
+
+    _validate_package_contract(package, video_rgb)
+    meta = _build_demo_meta(package, input_path, output_fps)
+    data_json = _build_demo_data_json(package, meta)
+    _write_viewer_files(
+        output_dir=output_dir,
+        assets_dir=assets_dir,
+        input_path=input_path,
+        data_json=data_json,
+        video_rgb=video_rgb,
+        output_fps=output_fps,
+    )
+
+
+# === Inference orchestration ===
+
+
+def _resolve_paths(args: argparse.Namespace) -> tuple[Path, Path, Path, Path]:
+    """Resolve and validate the config, input, checkpoint, and output paths."""
     config_path = Path(args.config).resolve()
     input_path = Path(args.input).resolve()
     ckpt_path = Path(args.ckpt_path).resolve()
-    if not config_path.exists():
-        raise FileNotFoundError(config_path)
-    if not input_path.exists():
-        raise FileNotFoundError(input_path)
-    if not ckpt_path.exists():
-        raise FileNotFoundError(ckpt_path)
-
+    for path in (config_path, input_path, ckpt_path):
+        _ensure_file_exists(path)
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    return config_path, input_path, ckpt_path, output_dir
+
+
+def _load_checkpoint_state(path: Path) -> dict[str, torch.Tensor]:
+    """Load and unwrap a checkpoint into a model state dict."""
+    try:
+        payload = torch.load(path, map_location="cpu", mmap=True)
+    except TypeError:
+        payload = torch.load(path, map_location="cpu")
+    state = _unwrap_state_dict(payload)
+    if not state:
+        raise RuntimeError(f"No model weights found in checkpoint: {path}")
+    return state
+
+
+def _build_inference_model(
+    cfg: Any, ckpt_path: Path, device_arg: str
+) -> tuple[torch.nn.Module, torch.device]:
+    """Build the model, load checkpoint weights, and move it to the target device.
+
+    The device is resolved only after the checkpoint loads successfully, so a
+    checkpoint mismatch surfaces before any device-availability error (matching
+    the original call ordering). Returns the ready model and its resolved device.
+    """
+    model = build_model(cfg["model"]).eval()
+    state = _load_checkpoint_state(ckpt_path)
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        raise RuntimeError(
+            f"Checkpoint mismatch: missing={len(missing)}, unexpected={len(unexpected)}"
+        )
+    del state
+    gc.collect()
+    device = _resolve_device(device_arg)
+    return model.to(device).eval(), device
+
+
+def main() -> int:
+    args = parse_args()
+    config_path, input_path, ckpt_path, output_dir = _resolve_paths(args)
     logger = build_logger("build_demo_from_video", output_dir)
 
     cfg = load_yaml_config(config_path)
     seed_everything(int(cfg.get_path("experiment.seed", 42)), deterministic=True)
 
     video_rgb, input_fps = _load_frames(input_path, max_frames=args.num_frames)
-    fps = float(args.fps if args.fps > 0.0 else input_fps)
+    fps = _resolve_fps(args.fps, input_fps)
     image_size = cfg.get_path("model.input.image_size", [256, 256])
     video_model_rgb = _resize_video(
         video_rgb, image_hw=(int(image_size[0]), int(image_size[1]))
@@ -352,18 +445,7 @@ def main() -> int:
     )
 
     logger.info("Building model from %s", config_path)
-    model = build_model(cfg["model"]).eval()
-    state = _load_checkpoint_model(ckpt_path)
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    if missing or unexpected:
-        raise RuntimeError(
-            f"Checkpoint mismatch: missing={len(missing)}, unexpected={len(unexpected)}"
-        )
-    del state
-    gc.collect()
-
-    device = _resolve_device(args.device)
-    model = model.to(device).eval()
+    model, device = _build_inference_model(cfg, ckpt_path, args.device)
     logger.info(
         "Running inference on %s with %d frames and %d point queries",
         device,
