@@ -148,13 +148,101 @@ def build_ui(results_root: str | Path) -> gr.Blocks:
                 _check_trajectory, [npz_in, colmap_in], [metrics_df, rrd_file]
             )
 
+        # Render the first package immediately on page load so the app opens as a
+        # ready-to-view result browser (no clicks, no GPU work).
+        demo.load(_load_package, [pkg_dd, show_dyn, max_pts], outputs)
+
+    return demo
+
+
+# ---------------------------------------------------------------------------
+# Pre-baked (static) viewer: read a bake_viewer_assets.py output; zero compute.
+# ---------------------------------------------------------------------------
+
+
+def _baked_abs(baked_dir: Path, rel: str | None) -> str | None:
+    return str(baked_dir / rel) if rel else None
+
+
+def load_baked_package(baked_dir: Path, entry: dict | None) -> tuple:
+    """Return (video, poster, meta-rows, glb) for a pre-baked demo package."""
+    if not entry:
+        return _EMPTY_PKG
+    return (
+        _baked_abs(baked_dir, entry.get("video")),
+        _baked_abs(baked_dir, entry.get("poster")),
+        entry.get("meta_rows", []),
+        _baked_abs(baked_dir, entry.get("glb")),
+    )
+
+
+def load_baked_trajectory(baked_dir: Path, entry: dict | None) -> tuple:
+    """Return (metrics-rows, plot, rrd) for a pre-baked trajectory comparison."""
+    if not entry:
+        return [], None, None
+    return (
+        entry.get("metrics_rows", []),
+        _baked_abs(baked_dir, entry.get("plot")),
+        _baked_abs(baked_dir, entry.get("rrd")),
+    )
+
+
+def build_prebaked_ui(baked_dir: str | Path) -> gr.Blocks:
+    """Construct a static viewer over a bake_viewer_assets.py output directory."""
+    baked_dir = Path(baked_dir)
+    index = json.loads((baked_dir / "viewer_index.json").read_text())
+    pkgs = {e["name"]: e for e in index.get("demo_packages", [])}
+    trajs = {e["name"]: e for e in index.get("trajectories", [])}
+
+    with gr.Blocks(title="D4RT result viewer (pre-baked)") as demo:
+        gr.Markdown(
+            "# D4RT result viewer (pre-baked)\nStatic precomputed results — no compute at view time."
+        )
+        with gr.Tab("Demo Packages"):
+            names = list(pkgs)
+            with gr.Row():
+                with gr.Column(scale=2):
+                    dd = gr.Dropdown(
+                        choices=names,
+                        value=names[0] if names else None,
+                        label="Demo package",
+                    )
+                    video = gr.Video(label="Input video", interactive=False)
+                    poster = gr.Image(label="Poster", interactive=False)
+                    meta_df = gr.Dataframe(headers=["key", "value"], label="meta")
+                with gr.Column(scale=3):
+                    model3d = gr.Model3D(label="Point cloud (GLB)", height=600)
+            outs = [video, poster, meta_df, model3d]
+            dd.change(lambda n: load_baked_package(baked_dir, pkgs.get(n)), [dd], outs)
+            demo.load(lambda n: load_baked_package(baked_dir, pkgs.get(n)), [dd], outs)
+
+        with gr.Tab("Trajectory Check"):
+            tnames = list(trajs)
+            tdd = gr.Dropdown(
+                choices=tnames, value=tnames[0] if tnames else None, label="Trajectory"
+            )
+            metrics_df = gr.Dataframe(headers=["metric", "value"], label="metrics")
+            plot_img = gr.Image(label="trajectory (top-down)", interactive=False)
+            rrd_file = gr.File(label="rerun .rrd (open with: uv run rerun <file>)")
+            touts = [metrics_df, plot_img, rrd_file]
+            tdd.change(
+                lambda n: load_baked_trajectory(baked_dir, trajs.get(n)), [tdd], touts
+            )
+            demo.load(
+                lambda n: load_baked_trajectory(baked_dir, trajs.get(n)), [tdd], touts
+            )
+
     return demo
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="D4RT gradio viewer")
-    parser.add_argument(
-        "--results-root", required=True, help="Root dir to scan for demo packages."
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--results-root", help="Live viewer: scan this dir for demo packages."
+    )
+    source.add_argument(
+        "--prebaked", help="Pre-baked viewer: a bake_viewer_assets.py output dir."
     )
     parser.add_argument(
         "--server-name",
@@ -164,7 +252,12 @@ def main() -> int:
     parser.add_argument("--server-port", type=int, default=7860)
     parser.add_argument("--share", action="store_true")
     args = parser.parse_args()
-    build_ui(args.results_root).queue().launch(
+    ui = (
+        build_prebaked_ui(args.prebaked)
+        if args.prebaked
+        else build_ui(args.results_root)
+    )
+    ui.queue().launch(
         server_name=args.server_name, server_port=args.server_port, share=args.share
     )
     return 0

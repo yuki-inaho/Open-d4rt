@@ -29,6 +29,7 @@
 19. [未確定事項](#19-未確定事項)
 20. [参考資料](#20-参考資料)
 21. [ユーザー指摘・ギャップ・学び](#21-ユーザー指摘ギャップ学び)
+22. [プリベイク運用（静的結果ビューワ）](#22-プリベイク運用静的結果ビューワ)
 
 ---
 
@@ -180,7 +181,9 @@ flowchart LR
 | `vis/rerun_visualize.save_*_to_rrd` | ライブラリ | 3成果物を Rerun へログ(viewer/.rrd) | `vis/rerun_visualize.py` | `:218`, `:290`, `:379` |
 | `visualize_rerun.screenshot_rrd` | CLI | `rerun --serve-web` + Playwright でPNG | `scripts/visualize_rerun.py` | `scripts/visualize_rerun.py:164`, main `:205` |
 | `_gradio_helpers.build_glb_from_demo_data` | ヘルパ | 点群+カメラfrustumを GLB 化 | `scripts/_gradio_helpers.py` | `scripts/_gradio_helpers.py:65` |
-| `demo_gradio.build_ui` | Webアプリ | demo package 閲覧 + 軌跡チェック UI | `scripts/demo_gradio.py` | `scripts/demo_gradio.py:101` |
+| `demo_gradio.build_ui` | Webアプリ(ライブ) | demo package 閲覧 + 軌跡チェック UI(GLB/PnPを閲覧時生成) | `scripts/demo_gradio.py` | `scripts/demo_gradio.py:101` |
+| `bake_viewer_assets.bake_all` | スクリプト/ベイカー | 全成果物(GLB/軌跡report/plot/rrd)を事前生成 → `viewer_index.json` | `scripts/bake_viewer_assets.py` | `scripts/bake_viewer_assets.py:121`(`bake_demo_package:39`, `bake_trajectory:76`) |
+| `demo_gradio.build_prebaked_ui` | Webアプリ(静的) | ベイク済みファイルを**閲覧時ゼロ計算**で表示 | `scripts/demo_gradio.py` | `scripts/demo_gradio.py:190`(`load_baked_package:167`) |
 | `_export_demo_data`(依存元) | 上流ライブラリ | 点群/トラック/動的マスク/ref0_K 推論 | `vis/build_like_demo.py` | `vis/build_like_demo.py:1567` |
 
 ---
@@ -360,3 +363,47 @@ npx -y @mermaid-js/mermaid-cli -i docs/visualization_pipeline.md -o /tmp/mmd_che
 - **ヘッドレス検証を前提に設計する**: GUI 前提のビューアでも `.rrd` 書き出し + ヘッドレスブラウザ撮影で CI/サーバ運用に載せられる。
 - **重い依存は回避設計で代替できる**: scipy を入れずに frustum をメッシュ化するなど、機能を満たす軽量代替を優先する。
 - **敵対的レビューで運用面の穴を塞ぐ**: 既定バインド(0.0.0.0→127.0.0.1)や生成物の出力先(ソース dir 汚染→temp)は多観点レビューで顕在化した。
+
+---
+
+## 22. プリベイク運用（静的結果ビューワ）
+
+「処理は事前に済ませ、ビューワは完全に閲覧専用にしたい」という要件のための運用モード。**閲覧時の計算をゼロ**にする。
+
+### 22.1 2つのモード
+| モード | 閲覧時の計算 | 起動コマンド |
+|---|---|---|
+| ライブ | GLB メッシュ化 / 軌跡 PnP を**閲覧時に都度**実行(GPU は不使用) | `uv run --extra vis python scripts/demo_gradio.py --results-root tmp/` |
+| **プリベイク(静的)** | **ゼロ**(全て事前生成済みの静的ファイルを表示するだけ) | `uv run --extra vis python scripts/demo_gradio.py --prebaked <bake_dir>` |
+
+### 22.2 ベイク(事前生成)
+`scripts/bake_viewer_assets.py` が view-time の CPU 処理を全て前倒しする(`bake_all`, `scripts/bake_viewer_assets.py:121`)。
+
+```bash
+uv run --extra vis python scripts/bake_viewer_assets.py \
+  --results-root tmp/ --out tmp/viewer_results \
+  --trajectory run400_12f recon/run400/d4rt_pred_12.npz recon/run400/sparse_final_txt
+```
+
+生成物(自己完結ディレクトリ):
+```text
+tmp/viewer_results/
+  viewer_index.json                 # 全成果物のインデックス
+  <package>/scene.glb               # demo package の GLB(点群+カメラfrustum)
+  <package>/input_video.mp4         # 動画 / poster をコピー
+  <package>/video_poster.jpg
+  <traj>/report.json                # 軌跡指標(公開キーのみ)
+  <traj>/traj.png                   # 俯瞰プロット
+  <traj>/traj.rrd                   # Rerun録画
+```
+
+- demo package のベイク: `bake_demo_package`(`scripts/bake_viewer_assets.py:39`)。GLB は `_gradio_helpers.build_glb_from_demo_data` を再利用。
+- 軌跡のベイク: `bake_trajectory`(`scripts/bake_viewer_assets.py:76`)。`check_colmap_trajectory_consistency.compute_consistency` / `_write_plot` / `vis.rerun_visualize.save_trajectory_comparison_to_rrd` を再利用(計算はここでのみ発生)。
+
+### 22.3 静的ビューワ
+`build_prebaked_ui`(`scripts/demo_gradio.py:190`)が `viewer_index.json` を読み、コールバックは保存済みファイルのパスと行データを返すだけ(`load_baked_package` `:167` / `load_baked_trajectory` `:179`)。GLB ビルドも PnP も**行わない**。`demo.load` でページを開いた瞬間に1件目を表示。
+
+### 22.4 検証
+- `tests/test_bake_viewer_assets.py`(ベイカー単体: GLB/report/plot/rrd 生成・index 整合)
+- `tests/test_demo_gradio_app.py`(`build_prebaked_ui` 構築・`load_baked_*` のパス解決)
+- 実データで `tmp/viewer_results/` を生成し、`--prebaked` 起動 → HTTP 200・ブラウザ実描画(動画/poster/GLB/meta)を確認済み。
