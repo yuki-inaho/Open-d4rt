@@ -373,6 +373,7 @@ def _infer_tracks(
     *,
     model: torch.nn.Module,
     video_model_rgb: np.ndarray,
+    native_aspect_ratio: float,    
     query_uv_norm: np.ndarray,
     query_chunk_size: int,
     query_src_indices_global: np.ndarray | None = None,
@@ -384,10 +385,7 @@ def _infer_tracks(
     num_frames = int(video_model_rgb.shape[0])
     num_queries = int(query_uv_norm.shape[0])
     clip_frames = _model_clip_frames(model)
-    aspect_value = np.asarray(
-        [[float(video_model_rgb.shape[2]) / float(max(1, video_model_rgb.shape[1]))]],
-        dtype=np.float32,
-    )
+    aspect_value = np.asarray([[native_aspect_ratio]], dtype=np.float32)
     aspect_tensor = torch.from_numpy(aspect_value).to(device=device, dtype=torch.float32)
 
     tracks_xyz_local = np.full((num_queries, num_frames, 3), np.nan, dtype=np.float32)
