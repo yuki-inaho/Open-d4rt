@@ -941,6 +941,7 @@ def _infer_point_cloud_ref0(
     *,
     model: torch.nn.Module,
     video_model_rgb: np.ndarray,
+    native_aspect_ratio: float,
     point_query_uv_norm: np.ndarray,
     query_chunk_size: int,
     umeyama_slide_window: bool,
@@ -954,10 +955,7 @@ def _infer_point_cloud_ref0(
     num_frames = int(video_model_rgb.shape[0])
     num_points = int(point_query_uv_norm.shape[0])
     clip_frames = _model_clip_frames(model)
-    aspect_value = np.asarray(
-        [[float(video_model_rgb.shape[2]) / float(max(1, video_model_rgb.shape[1]))]],
-        dtype=np.float32,
-    )
+    aspect_value = np.asarray([[native_aspect_ratio]], dtype=np.float32)
     aspect_tensor = torch.from_numpy(aspect_value).to(
         device=device, dtype=torch.float32
     )
@@ -1244,8 +1242,9 @@ def _predict_camera_branches(
     device = next(model.parameters()).device
     num_frames = int(video_model_rgb.shape[0])
     clip_frames = _model_clip_frames(model)
-    hm, wm = int(video_model_rgb.shape[1]), int(video_model_rgb.shape[2])
-    aspect_value = np.asarray([[float(wm) / float(max(1, hm))]], dtype=np.float32)
+    aspect_value = np.asarray(
+        [[float(image_hw[1]) / float(max(1, image_hw[0]))]], dtype=np.float32
+    )
     aspect_tensor = torch.from_numpy(aspect_value).to(
         device=device, dtype=torch.float32
     )
@@ -1590,7 +1589,7 @@ def _export_demo_data(
     num_frames = int(video_model_rgb.shape[0])
     clip_frames = _model_clip_frames(model)
     h0, w0 = int(video_rgb.shape[1]), int(video_rgb.shape[2])
-
+    aspect_value = float(w0) / float(max(1, h0))
     point_query_uv_norm = point_query_uv_px.copy()
     point_query_uv_norm[:, 0] /= float(max(w0 - 1, 1))
     point_query_uv_norm[:, 1] /= float(max(h0 - 1, 1))
@@ -1607,6 +1606,7 @@ def _export_demo_data(
     points_xyz_ref0, points_vis, points_conf, _ = _infer_point_cloud_ref0(
         model=model,
         video_model_rgb=video_model_rgb,
+        native_aspect_ratio=aspect_value,
         point_query_uv_norm=point_query_uv_norm,
         query_chunk_size=point_query_chunk_size,
         umeyama_slide_window=bool(umeyama_slide_window),
@@ -1702,6 +1702,7 @@ def _export_demo_data(
     track_payload = _infer_tracks(
         model=model,
         video_model_rgb=video_model_rgb,
+        native_aspect_ratio=aspect_value,
         query_uv_norm=track_query_uv_norm.astype(np.float32),
         query_chunk_size=track_query_chunk_size,
         query_src_indices_global=track_query_t_src,

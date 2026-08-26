@@ -607,6 +607,7 @@ def main() -> int:
             pred_payload = _infer_tracks(
                 model=model,
                 video_model_rgb=video_model_rgb,
+                native_aspect_ratio=float(original_w) / float(max(original_h, 1)),
                 query_uv_norm=query_uv_norm,
                 query_chunk_size=int(args.query_chunk_size),
             )
