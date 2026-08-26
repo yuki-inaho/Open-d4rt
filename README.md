@@ -327,6 +327,34 @@ bash run_build_worldtrack_demo.sh
 The generated demo package contains `assets/demo_data.json`,
 `assets/input_video.mp4`, rendered diagnostic videos, and `manifest.json`.
 
+## 🔗 Two-frame matching (Gradio)
+
+Use the released checkpoint to inspect sparse OpenD4RT correspondences between
+two uploaded images. The model loads only when **Match frames** is clicked:
+
+```bash
+pixi run two-frame-match
+```
+
+Then open `http://127.0.0.1:7861`, upload a source frame and a target frame,
+and press **Match frames**. The result shows color-linked points alongside a
+table of source/target pixel coordinates, visibility, and confidence. The
+default checkpoint path is
+`checkpoints/OpenD4RT_32CLIP_9Dataset_NoAUG/opend4rt.ckpt`; obtain it using the
+checkpoint-download command above. To use a different released checkpoint:
+
+```bash
+pixi run two-frame-match \
+  --config checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/model.yaml \
+  --ckpt-path checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt
+```
+
+OpenD4RT is a video model, so nearby frames from the same video are the intended
+input. Inputs with different image sizes are accepted and their output points
+are mapped back to the original sizes, but different aspect ratios can reduce
+quality. On an 8 GB GPU, keep the default 64 source queries and chunk size 8,
+then increase them gradually if memory permits.
+
 ## ✅ ToDo
 
 - [x] Release the OpenD4RT model runtime for the 32-frame 9-dataset checkpoint.

@@ -30,3 +30,4 @@ pytest = ">=8.0.0"
 [tasks]
 verify = "python -c \"import torch, torchvision; x = torch.ones(32, device='cuda'); print(f'torch={torch.__version__} torchvision={torchvision.__version__} cuda={torch.cuda.is_available()} sum={x.sum().item()}')\""
 test = "pytest"
+two-frame-match = "python scripts/gradio_two_frame_match.py"
