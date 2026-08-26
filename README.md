@@ -337,8 +337,11 @@ pixi run two-frame-match
 ```
 
 Then open `http://127.0.0.1:7861`, upload a source frame and a target frame,
-and press **Match frames**. The result shows color-linked points alongside a
-table of source/target pixel coordinates, visibility, and confidence. The
+and press **Match frames**. The default 96 × 72 grid evaluates 6,912 source
+pixels and renders a dense correspondence field without overlapping thousands
+of lines. A line-overlay mode and grids up to the checkpoint's 256 × 256 model
+resolution are also available. The result includes a table of source/target
+pixel coordinates, visibility, and confidence. The
 default checkpoint path is
 `checkpoints/OpenD4RT_32CLIP_9Dataset_NoAUG/opend4rt.ckpt`; obtain it using the
 checkpoint-download command above. To use a different released checkpoint:
@@ -352,8 +355,9 @@ pixi run two-frame-match \
 OpenD4RT is a video model, so nearby frames from the same video are the intended
 input. Inputs with different image sizes are accepted and their output points
 are mapped back to the original sizes, but different aspect ratios can reduce
-quality. On an 8 GB GPU, keep the default 64 source queries and chunk size 8,
-then increase them gradually if memory permits.
+quality. On an 8 GB GPU, start with the default 96 × 72 grid and chunk size 96.
+If inference runs out of memory, lower only the chunk size; lowering the grid
+reduces total runtime as well as output density.
 
 ## ✅ ToDo
 

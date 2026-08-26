@@ -53,6 +53,24 @@ def test_overlay_and_rows_keep_original_coordinates() -> None:
     assert np.allclose(rows, [[3.0, 4.0, 8.0, 9.0, 0.9, 0.7]])
 
 
+def test_dense_field_and_table_limit() -> None:
+    source = np.full((18, 24, 3), 80, dtype=np.uint8)
+    target = np.full((20, 28, 3), 120, dtype=np.uint8)
+    matches = matcher.MatchSet(
+        source_xy=np.asarray([[2.0, 3.0], [20.0, 15.0]], dtype=np.float32),
+        target_xy=np.asarray([[4.0, 5.0], [24.0, 16.0]], dtype=np.float32),
+        visibility_probability=np.asarray([0.9, 0.8], dtype=np.float32),
+        confidence=np.asarray([0.7, 0.6], dtype=np.float32),
+    )
+
+    field = matcher.render_dense_match_field(source, target, matches, 12, 9)
+    rows = matcher.match_rows(matches, max_rows=1)
+
+    assert field.shape == (20, 24 + 28 + 28, 3)
+    assert not np.array_equal(field[:18, :24], source)
+    assert len(rows) == 1
+
+
 def test_build_ui_does_not_load_model() -> None:
     settings = matcher.AppSettings(
         config_path=matcher.REPO_ROOT / "missing.yaml",

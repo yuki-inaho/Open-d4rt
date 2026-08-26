@@ -40,6 +40,9 @@ DEFAULT_CHECKPOINT = (
     REPO_ROOT / "checkpoints/OpenD4RT_32CLIP_9Dataset_NoAUG/opend4rt.ckpt"
 )
 _CANVAS_GUTTER = 28
+_MAX_TABLE_ROWS = 1000
+DENSE_VISUALIZATION = "Dense correspondence field"
+LINE_VISUALIZATION = "Correspondence lines"
 
 
 @dataclass(frozen=True)
@@ -153,21 +156,16 @@ def make_source_grid(
     height: int,
     cols: int,
     rows: int,
-    max_points: int,
-    margin_ratio: float = 0.06,
+    margin_ratio: float = 0.0,
 ) -> np.ndarray:
-    """Build a deterministic source-pixel grid, keeping it safely inside edges."""
+    """Build a deterministic source-pixel grid spanning the whole image."""
     cols = max(1, int(cols))
     rows = max(1, int(rows))
-    max_points = max(1, int(max_points))
     margin = float(np.clip(margin_ratio, 0.0, 0.45))
     max_x, max_y = float(max(width - 1, 0)), float(max(height - 1, 0))
     xs = np.linspace(max_x * margin, max_x * (1.0 - margin), num=cols)
     ys = np.linspace(max_y * margin, max_y * (1.0 - margin), num=rows)
     points = np.stack(np.meshgrid(xs, ys, indexing="xy"), axis=-1).reshape(-1, 2)
-    if points.shape[0] > max_points:
-        selected = np.linspace(0, points.shape[0] - 1, max_points, dtype=np.int64)
-        points = points[selected]
     return points.astype(np.float32)
 
 
@@ -231,16 +229,13 @@ def infer_two_frame_matches(
     target_rgb: np.ndarray,
     grid_cols: int,
     grid_rows: int,
-    max_points: int,
     query_chunk_size: int,
     visibility_threshold: float,
 ) -> tuple[MatchSet, int]:
     """Run OpenD4RT's frame-0 to frame-1 query interface for a source grid."""
     source_height, source_width = source_rgb.shape[:2]
     target_height, target_width = target_rgb.shape[:2]
-    source_xy = make_source_grid(
-        source_width, source_height, grid_cols, grid_rows, max_points
-    )
+    source_xy = make_source_grid(source_width, source_height, grid_cols, grid_rows)
     query_uv = source_xy / np.asarray(
         [max(source_width - 1, 1), max(source_height - 1, 1)], dtype=np.float32
     )
@@ -354,8 +349,81 @@ def render_match_overlay(
     return canvas
 
 
-def match_rows(matches: MatchSet) -> list[list[float]]:
+def _dense_match_colors(matches: MatchSet, target_hw: tuple[int, int]) -> np.ndarray:
+    """Encode each target position as RGB for a line-free dense match field."""
+    target_height, target_width = target_hw
+    normalized = matches.target_xy / np.asarray(
+        [max(target_width - 1, 1), max(target_height - 1, 1)], dtype=np.float32
+    )
+    u = np.clip(normalized[:, 0], 0.0, 1.0)
+    v = np.clip(normalized[:, 1], 0.0, 1.0)
+    colors = np.stack([u, v, 1.0 - 0.5 * (u + v)], axis=1) * 255.0
+    return np.rint(colors).astype(np.uint8)
+
+
+def render_dense_match_field(
+    source_rgb: np.ndarray,
+    target_rgb: np.ndarray,
+    matches: MatchSet,
+    grid_cols: int,
+    grid_rows: int,
+) -> np.ndarray:
+    """Render thousands of matches as a dense color field without crossed lines.
+
+    A source cell and its predicted target point receive the same color.  The
+    color encodes target-frame position, so discontinuities expose motion and
+    correspondence boundaries while the source image remains visible beneath.
+    """
+    source_height, source_width = source_rgb.shape[:2]
+    target_height, target_width = target_rgb.shape[:2]
+    source_field = source_rgb.copy()
+    target_field = target_rgb.copy()
+    colors = _dense_match_colors(matches, (target_height, target_width))
+    cell_width = source_width / max(int(grid_cols), 1)
+    cell_height = source_height / max(int(grid_rows), 1)
+    source_radius = max(1, int(round(0.55 * min(cell_width, cell_height))))
+    target_radius = max(1, min(3, source_radius))
+
+    for source_xy, target_xy, color_array in zip(
+        matches.source_xy, matches.target_xy, colors, strict=True
+    ):
+        color = tuple(int(value) for value in color_array)
+        source_point = tuple(np.rint(source_xy).astype(np.int32))
+        target_point = tuple(np.rint(target_xy).astype(np.int32))
+        cv2.circle(
+            source_field,
+            source_point,
+            radius=source_radius,
+            color=color,
+            thickness=-1,
+            lineType=cv2.LINE_AA,
+        )
+        cv2.circle(
+            target_field,
+            target_point,
+            radius=target_radius,
+            color=color,
+            thickness=-1,
+            lineType=cv2.LINE_AA,
+        )
+
+    source_field = cv2.addWeighted(source_rgb, 0.35, source_field, 0.65, 0.0)
+    target_field = cv2.addWeighted(target_rgb, 0.65, target_field, 0.35, 0.0)
+    canvas_height = max(source_height, target_height)
+    canvas_width = source_width + _CANVAS_GUTTER + target_width
+    canvas = np.full((canvas_height, canvas_width, 3), 245, dtype=np.uint8)
+    canvas[:source_height, :source_width] = source_field
+    canvas[:target_height, source_width + _CANVAS_GUTTER :] = target_field
+    return canvas
+
+
+def match_rows(matches: MatchSet, max_rows: int | None = None) -> list[list[float]]:
     """Create Gradio table rows, retaining original source and target pixels."""
+    count = (
+        len(matches.source_xy)
+        if max_rows is None
+        else min(len(matches.source_xy), max_rows)
+    )
     return [
         [
             float(source_xy[0]),
@@ -366,10 +434,10 @@ def match_rows(matches: MatchSet) -> list[list[float]]:
             float(confidence),
         ]
         for source_xy, target_xy, visibility, confidence in zip(
-            matches.source_xy,
-            matches.target_xy,
-            matches.visibility_probability,
-            matches.confidence,
+            matches.source_xy[:count],
+            matches.target_xy[:count],
+            matches.visibility_probability[:count],
+            matches.confidence[:count],
             strict=True,
         )
     ]
@@ -384,9 +452,9 @@ def _build_match_handler(settings: AppSettings):
         target: np.ndarray | None,
         grid_cols: float,
         grid_rows: float,
-        max_points: float,
         query_chunk_size: float,
         visibility_threshold: float,
+        visualization: str,
     ) -> tuple[np.ndarray | None, list[list[float]], str]:
         try:
             source_rgb = _as_rgb(source, "the source frame")
@@ -399,11 +467,19 @@ def _build_match_handler(settings: AppSettings):
                 target_rgb=target_rgb,
                 grid_cols=int(grid_cols),
                 grid_rows=int(grid_rows),
-                max_points=int(max_points),
                 query_chunk_size=int(query_chunk_size),
                 visibility_threshold=float(visibility_threshold),
             )
-            overlay = render_match_overlay(source_rgb, target_rgb, matches)
+            if visualization == LINE_VISUALIZATION:
+                overlay = render_match_overlay(source_rgb, target_rgb, matches)
+            else:
+                overlay = render_dense_match_field(
+                    source_rgb,
+                    target_rgb,
+                    matches,
+                    grid_cols=int(grid_cols),
+                    grid_rows=int(grid_rows),
+                )
             aspect_warning = ""
             source_aspect = source_rgb.shape[1] / source_rgb.shape[0]
             target_aspect = target_rgb.shape[1] / target_rgb.shape[0]
@@ -414,11 +490,12 @@ def _build_match_handler(settings: AppSettings):
                 )
             summary = (
                 f"### {len(matches.source_xy)} / {query_count} correspondences shown\n\n"
+                f"Dense query grid: `{int(grid_cols)} × {int(grid_rows)}`. "
                 f"Visibility threshold: `{float(visibility_threshold):.2f}`. "
-                "Coordinates in the table are pixels in the original uploads."
+                f"The table shows at most {_MAX_TABLE_ROWS} rows in original-upload pixels."
                 f"{aspect_warning}"
             )
-            return overlay, match_rows(matches), summary
+            return overlay, match_rows(matches, max_rows=_MAX_TABLE_ROWS), summary
         except Exception as exc:  # Surface setup/inference failures in the local UI.
             return None, [], f"### Matching failed\n\n`{type(exc).__name__}: {exc}`"
 
@@ -431,8 +508,9 @@ def build_ui(settings: AppSettings) -> gr.Blocks:
     with gr.Blocks(title="OpenD4RT two-frame matching") as demo:
         gr.Markdown(
             "# OpenD4RT two-frame matching\n"
-            "Upload two frames, then inspect OpenD4RT's sparse frame-0 → frame-1 "
-            "correspondences. Best results come from nearby frames of the same video."
+            "Upload two frames, then densely query OpenD4RT's frame-0 → frame-1 "
+            "correspondences. The default 96 × 72 grid evaluates 6,912 source points. "
+            "Best results come from nearby frames of the same video."
         )
         with gr.Row():
             source = gr.Image(
@@ -444,15 +522,17 @@ def build_ui(settings: AppSettings) -> gr.Blocks:
         with gr.Accordion("Matching settings", open=False):
             with gr.Row():
                 grid_cols = gr.Slider(
-                    2, 24, value=8, step=1, label="Source grid columns"
+                    2, 256, value=96, step=1, label="Dense grid columns"
                 )
-                grid_rows = gr.Slider(2, 24, value=8, step=1, label="Source grid rows")
-                max_points = gr.Slider(
-                    4, 256, value=64, step=4, label="Maximum queries"
+                grid_rows = gr.Slider(2, 256, value=72, step=1, label="Dense grid rows")
+                visualization = gr.Radio(
+                    [DENSE_VISUALIZATION, LINE_VISUALIZATION],
+                    value=DENSE_VISUALIZATION,
+                    label="Visualization",
                 )
             with gr.Row():
                 query_chunk_size = gr.Slider(
-                    1, 128, value=8, step=1, label="Queries per GPU decode chunk"
+                    1, 512, value=96, step=1, label="Queries per GPU decode chunk"
                 )
                 visibility_threshold = gr.Slider(
                     0.0, 1.0, value=0.5, step=0.05, label="Minimum visibility"
@@ -482,9 +562,9 @@ def build_ui(settings: AppSettings) -> gr.Blocks:
                 target,
                 grid_cols,
                 grid_rows,
-                max_points,
                 query_chunk_size,
                 visibility_threshold,
+                visualization,
             ],
             outputs=[overlay, table, summary],
             concurrency_limit=1,
