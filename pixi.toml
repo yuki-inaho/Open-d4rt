@@ -1,0 +1,32 @@
+[workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = "3.10.*"
+ffmpeg = ">=7,<8"
+
+[pypi-dependencies]
+torch = { version = "==2.6.0", index = "https://download.pytorch.org/whl/cu124" }
+torchvision = { version = "==0.21.0", index = "https://download.pytorch.org/whl/cu124" }
+numpy = "==2.2.5"
+pyyaml = "==6.0.3"
+opencv-python-headless = "==4.13.0.92"
+imageio = "==2.37.3"
+pillow = "==12.1.1"
+matplotlib = "==3.10.8"
+tqdm = "==4.67.3"
+tensorboard = "==2.20.0"
+lz4 = "==4.4.5"
+jaxtyping = ">=0.3.7"
+beartype = ">=0.22.9"
+huggingface-hub = ">=0.32.0"
+viser = ">=1.0.0"
+rerun-sdk = ">=0.23.1"
+gradio = ">=5.17.1"
+trimesh = ">=4.12.0"
+pytest = ">=8.0.0"
+
+[tasks]
+verify = "python -c \"import torch, torchvision; x = torch.ones(32, device='cuda'); print(f'torch={torch.__version__} torchvision={torchvision.__version__} cuda={torch.cuda.is_available()} sum={x.sum().item()}')\""
+test = "pytest"

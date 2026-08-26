@@ -53,6 +53,25 @@ included in this repository.
 
 ## 🔧 Installation
 
+### Pixi (recommended)
+
+Install [Pixi](https://pixi.sh/) and create the locked GPU environment:
+
+```bash
+pixi install
+pixi run verify
+```
+
+The Linux environment pins the upstream CUDA 12.4 PyTorch wheels, which support Pascal-class GPUs such as the GTX 1070. Use `pixi run python ...` for the README commands below.
+
+### GPU compatibility
+
+Run `pixi run verify` after installation; it performs an actual CUDA tensor operation rather than only checking that PyTorch imports. The default lock targets the CUDA 12.4 wheels and is appropriate for Pascal through Ada GPUs. NVIDIA Blackwell GPUs require CUDA 12.8 (or newer) PyTorch wheels instead of the default lock; update the `torch` and `torchvision` indexes in `pixi.toml` before recreating the environment.
+
+For an 8 GB GPU, start with a small local-video inference or `LIMIT_SEQS=1` and `QUERY_CHUNK_SIZE=512` for WorldTrack before attempting the full evaluation. WorldTrack data is not bundled with this repository.
+
+### Conda / pip alternative
+
 Create the conda environment:
 
 ```bash
